@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gemini 2.5 極速意譯機</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/generative-ai": "https://esm.run/@google/generative-ai"
+        }
+      }
+    </script>
+    <style>
+        :root {
+            --primary: #4285f4;
+            --bg: #f0f2f5;
+            --card: #ffffff;
+            --text: #1f1f1f;
+            --gray: #757575;
+            --error: #b00020;
+            --overlay: rgba(0, 0, 0, 0.6);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        /* --- 頂部導航 --- */
+        .navbar {
+            background: var(--card);
+            padding: 12px 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between; /* 左右分開 */
+            align-items: center;
+            z-index: 10;
+            flex-shrink: 0;
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        /* 設定按鈕 (齒輪) */
+        .btn-setting {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            color: var(--gray);
+            transition: transform 0.3s;
+        }
+        .btn-setting:hover { transform: rotate(90deg); color: var(--primary); }
+
+        /* --- 模態視窗 (Modal) --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: var(--overlay);
+            z-index: 1000;
+            display: none; /* 預設隱藏 */
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(3px);
+        }
+        .modal-overlay.show { display: flex; }
+
+        .modal-content {
+            background: #fff;
+            padding: 24px;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            text-align: center;
+            animation: popIn 0.3s ease;
+        }
+
+        @keyframes popIn {
+            from { transform: scale(0.9); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+
+        .modal-title { margin: 0 0 15px 0; font-size: 20px; color: #333; }
+        .modal-desc { font-size: 14px; color: #666; margin-bottom: 20px; line-height: 1.5; }
+
+        .api-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+            background: #f9f9f9;
+        }
+        .api-input:focus { border-color: var(--primary); outline: none; background: #fff; }
+
+        .btn-save {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+        }
+        .btn-save:active { transform: scale(0.98); }
+
+        /* --- 主內容區 --- */
+        .main-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 12px;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .input-card { flex: 0 0 auto; min-height: 180px; }
+        .output-card { flex: 1; background-color: #f8fbff; overflow: hidden; }
+
+        .card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #eee;
+        }
+
+        select {
+            border: none; background: transparent; font-size: 15px; font-weight: 600;
+            color: var(--primary); outline: none;
+        }
+
+        textarea {
+            width: 100%; border: none; resize: none; font-size: 18px; line-height: 1.5;
+            outline: none; background: transparent; padding: 0; font-family: inherit; flex: 1;
+        }
+
+        .output-area {
+            flex: 1; width: 100%; overflow-y: auto; white-space: pre-wrap;
+            font-size: 18px; line-height: 1.6; color: #202124;
+        }
+
+        #imagePreviewContainer { display: none; margin-top: 10px; position: relative; width: fit-content; }
+        #imagePreview { height: 100px; border-radius: 8px; border: 2px solid var(--primary); display: block; }
+        #removeImgBtn {
+            position: absolute; top: -8px; right: -8px; background: var(--error);
+            color: white; border-radius: 50%; width: 24px; height: 24px;
+            text-align: center; line-height: 24px; font-size: 14px; cursor: pointer;
+        }
+
+        .controls { display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; align-items: center; }
+
+        .btn-icon {
+            width: 48px; height: 48px; border-radius: 50%; border: none;
+            background-color: #f1f3f4; color: #5f6368; font-size: 22px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .btn-icon:active { transform: scale(0.92); }
+        .btn-mic.listening { background-color: #ea4335; color: white; animation: pulse 1.5s infinite; }
+        .btn-camera, .btn-speak { color: var(--primary); background: #e8f0fe; }
+        .btn-stop { color: #d93025; background: #fce8e6; }
+
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+        
+        #fileInput { display: none; }
+        .status-text { font-size: 12px; color: var(--gray); margin-right: auto; }
+        .cursor::after { content: '▋'; color: var(--primary); animation: blink 1s infinite; margin-left: 2px; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <div class="navbar">
+        <div class="title">⚡ Gemini 2.5 翻譯機</div>
+        <button id="settingBtn" class="btn-setting" title="設定 API Key">⚙️</button>
+    </div>
+
+    <div id="keyModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 class="modal-title">設定 API Key</h3>
+            <p class="modal-desc">請輸入您的 Google Gemini API Key<br>(僅儲存在您的瀏覽器中)</p>
+            <input type="password" id="modalKeyInput" class="api-input" placeholder="貼上 API Key...">
+            <button id="saveKeyBtn" class="btn-save">儲存並開始</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="card input-card">
+            <div class="card-header">
+                <select id="inputLang">
+                    <option value="auto">🌍 自動偵測 (預設中文)</option>
+                    <option value="zh-TW">🇹🇼 繁體中文</option>
+                    <option value="en-US">🇺🇸 英文 (English)</option>
+                    <option value="ja-JP">🇯🇵 日文 (日本語)</option>
+                    <option value="ko-KR">🇰🇷 韓文 (한국어)</option>
+                </select>
+                <span id="statusText" class="status-text">就緒</span>
+            </div>
+
+            <textarea id="inputText" placeholder="輸入文字，或點擊相機/麥克風..."></textarea>
+            
+            <div id="imagePreviewContainer">
+                <img id="imagePreview" alt="Preview">
+                <div id="removeImgBtn">✕</div>
+            </div>
+
+            <div class="controls">
+                <input type="file" id="fileInput" accept="image/*" capture="environment">
+                <button id="cameraBtn" class="btn-icon btn-camera" title="拍照翻譯">📷</button>
+                <button id="micBtn" class="btn-icon btn-mic" title="語音輸入">🎤</button>
+            </div>
+        </div>
+
+        <div class="card output-card">
+            <div class="card-header">
+                <select id="targetLang">
+                    <option value="Traditional Chinese (Taiwan)">🇹🇼 翻成：繁體中文</option>
+                    <option value="Japanese">🇯🇵 翻成：日文 (敬語)</option>
+                    <option value="English">🇺🇸 翻成：英文</option>
+                    <option value="Korean">🇰🇷 翻成：韓文</option>
+                </select>
+            </div>
+
+            <div id="outputText" class="output-area"></div>
+
+            <div class="controls" style="margin-top:auto;">
+                <button id="stopBtn" class="btn-icon btn-stop" title="停止朗讀">⏹️</button>
+                <button id="speakBtn" class="btn-icon btn-speak" title="朗讀結果">🔊</button>
+                <button id="copyBtn" class="btn-icon" title="複製文字">📋</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { GoogleGenerativeAI } from "@google/generative-ai";
+
+        // --- DOM 元素 ---
+        const els = {
+            inputLang: document.getElementById('inputLang'),
+            targetLang: document.getElementById('targetLang'),
+            input: document.getElementById('inputText'),
+            output: document.getElementById('outputText'),
+            status: document.getElementById('statusText'),
+            micBtn: document.getElementById('micBtn'),
+            cameraBtn: document.getElementById('cameraBtn'),
+            fileInput: document.getElementById('fileInput'),
+            speakBtn: document.getElementById('speakBtn'),
+            stopBtn: document.getElementById('stopBtn'),
+            copyBtn: document.getElementById('copyBtn'),
+            imgContainer: document.getElementById('imagePreviewContainer'),
+            imgPreview: document.getElementById('imagePreview'),
+            removeImg: document.getElementById('removeImgBtn'),
+            // Modal 相關
+            modal: document.getElementById('keyModal'),
+            modalInput: document.getElementById('modalKeyInput'),
+            saveBtn: document.getElementById('saveKeyBtn'),
+            settingBtn: document.getElementById('settingBtn')
+        };
+
+        let genAI, model;
+        let currentImagePart = null;
+        let debounceTimer;
+
+        // --- API Key 管理邏輯 ---
+        function checkAndInitKey() {
+            const savedKey = localStorage.getItem('gemini_api_key_v2');
+            if (savedKey) {
+                els.modalInput.value = savedKey; // 預填
+                initModel(savedKey);
+                els.modal.classList.remove('show'); // 有 Key 就隱藏
+            } else {
+                els.modal.classList.add('show'); // 沒 Key 就顯示
+            }
+        }
+
+        function initModel(key) {
+            if (!key) return false;
+            try {
+                genAI = new GoogleGenerativeAI(key);
+                return true;
+            } catch (e) {
+                console.error("Init failed", e);
+                return false;
+            }
+        }
+
+        // 儲存按鈕
+        els.saveBtn.addEventListener('click', () => {
+            const key = els.modalInput.value.trim();
+            if (key) {
+                localStorage.setItem('gemini_api_key_v2', key);
+                initModel(key);
+                els.modal.classList.remove('show');
+                els.status.innerText = "API Key 已儲存";
+            } else {
+                alert("請輸入 API Key");
+            }
+        });
+
+        // 設定按鈕 (打開 Modal)
+        els.settingBtn.addEventListener('click', () => {
+            els.modal.classList.add('show');
+        });
+
+        // 點擊背景關閉 Modal (如果有 Key 的話)
+        els.modal.addEventListener('click', (e) => {
+            if (e.target === els.modal && localStorage.getItem('gemini_api_key_v2')) {
+                els.modal.classList.remove('show');
+            }
+        });
+
+        // 頁面載入時檢查
+        checkAndInitKey();
+
+
+        // --- 核心翻譯功能 (Gemini 2.5) ---
+        async function fileToGenerativePart(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64Data = reader.result.split(',')[1];
+                    resolve({ inlineData: { data: base64Data, mimeType: file.type } });
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function runTranslation() {
+            const text = els.input.value.trim();
+            if (!text && !currentImagePart) return;
+
+            // 確保有初始化
+            if (!genAI) {
+                els.modal.classList.add('show'); // 沒初始化就彈窗
+                return;
+            }
+
+            window.speechSynthesis.cancel(); // 停止舊語音
+
+            const target = els.targetLang.value;
+            els.status.innerText = "Gemini 2.5 思考中...";
+            els.output.innerText = "";
+            els.output.classList.add('cursor');
+
+            let prompt = "";
+            let inputParts = [];
+
+            if (currentImagePart) {
+                prompt = `角色：旅遊助手。任務：分析圖片並意譯成【${target}】。規則：1.列出重點。2.保持排版。3.參考文字："${text}"。`;
+                inputParts = [prompt, currentImagePart];
+            } else {
+                prompt = `角色：即時口譯員。任務：將 "${text}" 意譯成【${target}】。規則：自然口語、不逐字翻。`;
+                inputParts = [prompt];
+            }
+
+            try {
+                // 使用 Gemini 2.5 Flash
+                model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+                const result = await model.generateContentStream(inputParts);
+
+                for await (const chunk of result.stream) {
+                    els.output.innerText += chunk.text();
+                    els.output.scrollTop = els.output.scrollHeight;
+                }
+                els.status.innerText = "完成";
+            } catch (error) {
+                console.error(error);
+                els.output.innerText = "❌ 錯誤: " + error.message;
+                if(error.message.includes("404")) els.output.innerText += "\n(請檢查 API Key 權限)";
+                els.status.innerText = "失敗";
+            } finally {
+                els.output.classList.remove('cursor');
+            }
+        }
+
+        // --- 事件監聽 ---
+        els.input.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            if (!els.input.value && !currentImagePart) {
+                els.output.innerText = ""; els.status.innerText = "就緒"; return;
+            }
+            debounceTimer = setTimeout(runTranslation, 600);
+        });
+
+        els.targetLang.addEventListener('change', () => runTranslation());
+
+        els.cameraBtn.addEventListener('click', () => els.fileInput.click());
+        els.fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            els.status.innerText = "處理圖片中...";
+            els.imgPreview.src = URL.createObjectURL(file);
+            els.imgContainer.style.display = 'block';
+            currentImagePart = await fileToGenerativePart(file);
+            runTranslation();
+        });
+
+        els.removeImg.addEventListener('click', () => {
+            els.fileInput.value = ''; currentImagePart = null;
+            els.imgContainer.style.display = 'none'; els.output.innerText = "";
+            els.status.innerText = "圖片已移除";
+        });
+
+        // 語音辨識
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            const recognition = new SpeechRecognition();
+            recognition.continuous = false; recognition.interimResults = true;
+            els.micBtn.addEventListener('click', () => {
+                if (els.micBtn.classList.contains('listening')) recognition.stop();
+                else {
+                    let lang = els.inputLang.value;
+                    if (lang === 'auto') lang = 'zh-TW';
+                    recognition.lang = lang; recognition.start();
+                }
+            });
+            recognition.onstart = () => { els.micBtn.classList.add('listening'); els.status.innerText = "🎤 聆聽中..."; els.input.placeholder = "請開始說話..."; };
+            recognition.onend = () => { els.micBtn.classList.remove('listening'); els.status.innerText = "語音結束"; els.input.placeholder = "輸入文字..."; };
+            recognition.onresult = (e) => {
+                let transcript = '';
+                for (let i = e.resultIndex; i < e.results.length; ++i) transcript += e.results[i][0].transcript;
+                els.input.value = transcript; els.input.dispatchEvent(new Event('input'));
+            };
+        } else { els.micBtn.style.display = 'none'; }
+
+        // 朗讀與停止
+        els.speakBtn.addEventListener('click', () => {
+            const text = els.output.innerText; if (!text) return;
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            const target = els.targetLang.value;
+            if (target.includes("Japan")) utterance.lang = "ja-JP";
+            else if (target.includes("English")) utterance.lang = "en-US";
+            else if (target.includes("Korean")) utterance.lang = "ko-KR";
+            else utterance.lang = "zh-TW";
+            window.speechSynthesis.speak(utterance);
+        });
+
+        els.stopBtn.addEventListener('click', () => {
+            window.speechSynthesis.cancel();
+            els.status.innerText = "已停止朗讀";
+        });
+
+        els.copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(els.output.innerText);
+            els.status.innerText = "已複製";
+        });
+
+    </script>
+</body>
+</html>
