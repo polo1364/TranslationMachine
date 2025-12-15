@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Gemini 2.5 專業口譯機</title>
+    <title>Gemini 2.5 口譯機 (除錯版)</title>
     <script type="importmap">
       {
         "imports": {
@@ -14,8 +14,8 @@
     <style>
         :root {
             --bg-color: #121212;
-            --btn-me: #2d7aff;    /* 藍色 */
-            --btn-other: #ff453a; /* 紅色 */
+            --btn-me: #2d7aff;
+            --btn-other: #ff453a;
             --text-color: #ffffff;
         }
 
@@ -29,100 +29,65 @@
             touch-action: manipulation;
         }
 
-        /* 頂部導航 */
+        /* 導航 */
         .navbar {
-            padding: 10px 15px;
-            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 15px; display: flex; justify-content: space-between; align-items: center;
             background: rgba(30,30,30,0.8); backdrop-filter: blur(10px); z-index: 10;
         }
-        .status-badge {
-            font-size: 12px; padding: 4px 8px; border-radius: 4px;
-            background: #333; color: #888; transition: 0.3s;
-        }
-        .status-badge.active { background: #4caf50; color: #fff; }
+        .status-text { font-size: 14px; color: #888; font-weight: bold; }
 
-        /* 螢幕顯示區 */
+        /* 螢幕 */
         .screen {
             flex: 1; padding: 20px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 20px;
             scroll-behavior: smooth;
         }
-
-        /* 對話氣泡 */
-        .msg-group {
-            display: flex; flex-direction: column; gap: 6px;
-            opacity: 0; animation: fadeIn 0.3s forwards;
-        }
-        @keyframes fadeIn { to { opacity: 1; } }
-
-        .label { font-size: 12px; color: #666; letter-spacing: 1px; text-transform: uppercase; }
         
-        .result-text {
-            font-size: 28px; font-weight: 700; line-height: 1.3;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        .error-msg {
+            background: rgba(255, 0, 0, 0.2); border: 1px solid red; color: #ffcccc;
+            padding: 10px; border-radius: 8px; font-size: 14px; text-align: center;
+            margin-top: auto;
         }
-        .original-text { font-size: 16px; color: #888; }
 
-        /* 我方 (中文 -> 日文) */
+        .msg-group { display: flex; flex-direction: column; gap: 6px; opacity: 0; animation: fadeIn 0.3s forwards; }
+        @keyframes fadeIn { to { opacity: 1; } }
+        .label { font-size: 12px; color: #666; letter-spacing: 1px; text-transform: uppercase; }
+        .result-text { font-size: 24px; font-weight: 700; line-height: 1.3; }
+        .original-text { font-size: 14px; color: #888; }
+        
         .msg-me { align-items: flex-end; text-align: right; }
         .msg-me .result-text { color: var(--btn-other); }
         .msg-me .label { color: var(--btn-me); }
-
-        /* 對方 (日文 -> 中文) */
         .msg-other { align-items: flex-start; text-align: left; }
         .msg-other .result-text { color: var(--btn-me); }
         .msg-other .label { color: var(--btn-other); }
 
-        /* 底部按鈕區 (仿實體機) */
+        /* 控制區 */
         .controls {
-            height: 240px;
-            background: #1c1c1e;
-            border-top: 1px solid #333;
+            height: 240px; background: #1c1c1e; border-top: 1px solid #333;
             display: flex; justify-content: center; align-items: center; gap: 20px;
-            box-shadow: 0 -5px 20px rgba(0,0,0,0.5);
             padding-bottom: 20px;
         }
-
         .push-btn {
-            width: 130px; height: 130px;
-            border-radius: 50%;
-            border: 4px solid #333;
-            background: #2c2c2e;
-            display: flex; flex-direction: column;
-            justify-content: center; align-items: center;
-            cursor: pointer; position: relative;
-            transition: transform 0.1s, border-color 0.2s;
-            user-select: none; -webkit-tap-highlight-color: transparent;
+            width: 130px; height: 130px; border-radius: 50%; border: 4px solid #333; background: #2c2c2e;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            cursor: pointer; transition: transform 0.1s; user-select: none; -webkit-tap-highlight-color: transparent;
         }
-
         .push-btn:active, .push-btn.active { transform: scale(0.92); border-color: #fff; }
-
         .btn-tw { background: radial-gradient(circle, #2d7aff 0%, #0040dd 100%); }
         .btn-jp { background: radial-gradient(circle, #ff453a 0%, #d70015 100%); }
-
         .lang-code { font-size: 32px; font-weight: 900; color: #fff; }
-        .lang-name { font-size: 14px; color: rgba(255,255,255,0.8); margin-top: 4px; }
 
         /* Modal */
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.8); z-index: 1000; display: none;
-            align-items: center; justify-content: center; backdrop-filter: blur(5px);
+            align-items: center; justify-content: center;
         }
-        .modal-content {
-            background: #2c2c2e; padding: 25px; border-radius: 20px;
-            width: 85%; max-width: 350px; text-align: center; border: 1px solid #444;
-        }
-        .api-input {
-            width: 100%; padding: 12px; border: 1px solid #555; border-radius: 10px;
-            margin: 15px 0; font-size: 16px; background: #1c1c1e; color: #fff; box-sizing: border-box;
-        }
-        .btn-save {
-            background: var(--btn-me); color: white; border: none; padding: 12px;
-            width: 100%; border-radius: 10px; font-size: 16px; font-weight: bold;
-        }
-
-        /* 游標 */
+        .modal-content { background: #2c2c2e; padding: 25px; border-radius: 20px; width: 85%; max-width: 350px; text-align: center; }
+        .api-input { width: 100%; padding: 12px; margin: 15px 0; background: #1c1c1e; color: #fff; border: 1px solid #555; }
+        .btn-save { background: var(--btn-me); color: white; border: none; padding: 12px; width: 100%; border-radius: 10px; font-weight: bold; }
+        
         .typing::after { content: '▋'; animation: blink 1s infinite; color: #fff; }
         @keyframes blink { 50% { opacity: 0; } }
     </style>
@@ -130,32 +95,22 @@
 <body>
 
     <div class="navbar">
-        <div style="font-weight:bold; font-size:16px;">Gemini 2.5 口譯機</div>
-        <div id="statusBadge" class="status-badge">等待連線</div>
+        <div class="status-text" id="statusText">請按住按鈕說話</div>
         <button id="settingBtn" style="background:none; border:none; font-size:20px; cursor:pointer;">⚙️</button>
     </div>
 
     <div id="screen" class="screen">
-        <div style="text-align:center; color:#444; margin-top:auto; font-size:14px;">
-            按住說話 (Push to Talk)
-        </div>
+        <div id="errorDisplay" class="error-msg" style="display:none;"></div>
     </div>
 
     <div class="controls">
-        <div id="btnJP" class="push-btn btn-jp">
-            <div class="lang-code">JP</div>
-            <div class="lang-name">對方 (日文)</div>
-        </div>
-        <div id="btnTW" class="push-btn btn-tw">
-            <div class="lang-code">TW</div>
-            <div class="lang-name">我 (中文)</div>
-        </div>
+        <div id="btnJP" class="push-btn btn-jp"><div class="lang-code">JP</div><div style="font-size:12px; color:#ddd; margin-top:5px;">對方</div></div>
+        <div id="btnTW" class="push-btn btn-tw"><div class="lang-code">TW</div><div style="font-size:12px; color:#ddd; margin-top:5px;">我</div></div>
     </div>
 
     <div id="keyModal" class="modal-overlay">
         <div class="modal-content">
-            <h3 style="color:#fff; margin:0;">🔑 設定 Key</h3>
-            <p style="color:#aaa; font-size:13px; margin-top:5px;">請輸入 API Key (將使用 Gemini 2.5)</p>
+            <h3 style="color:#fff;">🔑 設定 API Key</h3>
             <input type="password" id="apiKeyInput" class="api-input" placeholder="貼上 API Key">
             <button id="saveKeyBtn" class="btn-save">確認</button>
         </div>
@@ -166,9 +121,8 @@
 
         const els = {
             screen: document.getElementById('screen'),
-            btnTW: document.getElementById('btnTW'),
-            btnJP: document.getElementById('btnJP'),
-            status: document.getElementById('statusBadge'),
+            status: document.getElementById('statusText'),
+            errorDisplay: document.getElementById('errorDisplay'),
             modal: document.getElementById('keyModal'),
             input: document.getElementById('apiKeyInput'),
             saveBtn: document.getElementById('saveKeyBtn'),
@@ -176,133 +130,123 @@
         };
 
         let genAI, model;
-        let isHolding = false;
-        let finalTranscript = "";
-
-        // --- 初始化 (鎖定 Gemini 2.5 Flash) ---
-        const savedKey = localStorage.getItem('gemini_api_key_pro');
+        
+        // 初始化
+        const savedKey = localStorage.getItem('gemini_api_key_v3');
         if (savedKey) { els.input.value = savedKey; initAI(savedKey); }
         else { els.modal.style.display = 'flex'; }
 
         function initAI(key) {
             try {
                 genAI = new GoogleGenerativeAI(key);
-                
-                // 🔥 修正：強制使用 2.5 Flash
                 model = genAI.getGenerativeModel({ 
-                    model: "gemini-2.5-flash", 
-                    systemInstruction: "你是一個即時口譯員。規則：1. 將輸入翻譯成目標語言。2. 翻譯必須【道地、自然】。3. 中翻日請用適當敬語。4. 日翻中請用台灣口語。5. 不解釋，只輸出結果。"
+                    model: "gemini-2.5-flash",
+                    systemInstruction: "你是一個專業口譯員。將輸入翻譯成目標語言。規則：道地、自然、不解釋。"
                 });
-
                 els.status.innerText = "Gemini 2.5 Ready";
-                els.status.classList.add('active');
-            } catch (e) {
-                console.error(e);
-                els.status.innerText = "Key Error";
-            }
+            } catch (e) { console.error(e); }
         }
 
         els.saveBtn.addEventListener('click', () => {
             const key = els.input.value.trim();
-            if(key) {
-                localStorage.setItem('gemini_api_key_pro', key);
-                initAI(key);
-                els.modal.style.display = 'none';
-            }
+            if(key) { localStorage.setItem('gemini_api_key_v3', key); initAI(key); els.modal.style.display = 'none'; }
         });
         els.settingBtn.addEventListener('click', () => els.modal.style.display = 'flex');
 
-        // --- 核心邏輯：Streaming + TTS ---
-        async function translateAndSpeak(text, type) {
-            if (!model) { els.modal.style.display = 'flex'; return; }
-            if (!text.trim()) return;
-
-            // 1. UI 顯示
+        // --- 翻譯與朗讀 ---
+        async function translate(text, type) {
+            if (!model) return;
+            const target = type === 'tw' ? 'Japanese' : 'Traditional Chinese';
+            
+            // UI
             const msgDiv = document.createElement('div');
             msgDiv.className = `msg-group ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
-            msgDiv.innerHTML = `
-                <div class="label">${type === 'tw' ? 'You' : 'Guest'}</div>
-                <div class="result-text typing">...</div>
-                <div class="original-text">${text}</div>
-            `;
+            msgDiv.innerHTML = `<div class="label">${type === 'tw'?'You':'Guest'}</div><div class="result-text typing">...</div><div class="original-text">${text}</div>`;
             els.screen.appendChild(msgDiv);
             els.screen.scrollTop = els.screen.scrollHeight;
-
-            const resultTextEl = msgDiv.querySelector('.result-text');
-            let fullTranslation = "";
-
-            // 2. Prompt
-            const target = type === 'tw' ? 'Japanese' : 'Traditional Chinese (Taiwan)';
-            const prompt = `Translate to ${target}: "${text}"`;
+            const resEl = msgDiv.querySelector('.result-text');
 
             try {
-                // 3. 呼叫 Gemini 2.5
-                const result = await model.generateContentStream(prompt);
-
-                resultTextEl.innerText = ""; 
-                
+                const result = await model.generateContentStream(`Translate to ${target}: "${text}"`);
+                let fullText = "";
+                resEl.innerText = "";
                 for await (const chunk of result.stream) {
-                    const chunkText = chunk.text();
-                    fullTranslation += chunkText;
-                    resultTextEl.innerText += chunkText;
+                    const t = chunk.text();
+                    fullText += t;
+                    resEl.innerText += t;
                     els.screen.scrollTop = els.screen.scrollHeight;
                 }
+                resEl.classList.remove('typing');
                 
-                resultTextEl.classList.remove('typing');
+                // TTS
+                const u = new SpeechSynthesisUtterance(fullText);
+                u.lang = type === 'tw' ? 'ja-JP' : 'zh-TW';
+                window.speechSynthesis.speak(u);
 
-                // 4. 朗讀
-                const speakLang = type === 'tw' ? 'ja-JP' : 'zh-TW';
-                speak(fullTranslation, speakLang);
-
-            } catch (error) {
-                resultTextEl.innerText = "Error";
-                console.error(error);
-                // 404 錯誤提示
-                if(error.message.includes("404")) {
-                     resultTextEl.innerText = "Model 404 (Check Key)";
-                }
+            } catch (e) {
+                resEl.innerText = "Error";
+                if(e.message.includes("404")) resEl.innerText = "Model 404 (Check Key)";
             }
         }
 
-        // --- TTS ---
-        function speak(text, lang) {
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = lang;
-            u.rate = 1.0; 
-            window.speechSynthesis.speak(u);
+        // --- 語音辨識 (除錯強化版) ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+            showError("您的瀏覽器不支援語音辨識 (請使用 Chrome/Safari)");
         }
 
-        // --- 語音辨識 (Web Speech API) ---
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) alert("請使用 Chrome 或 Safari");
-
-        function setupBtn(btn, langCode, type) {
+        function setupBtn(id, lang, type) {
+            const btn = document.getElementById(id);
             let recognition;
+            let isHolding = false;
 
             const start = (e) => {
-                e.preventDefault();
+                e.preventDefault(); // 防止手機上同時觸發 mouse/touch
                 if (isHolding) return;
+                
+                els.errorDisplay.style.display = 'none'; // 清除舊錯誤
                 isHolding = true;
                 btn.classList.add('active');
-                if(navigator.vibrate) navigator.vibrate(50); // 震動回饋
-
-                finalTranscript = "";
-                recognition = new SpeechRecognition();
-                recognition.lang = langCode;
-                recognition.interimResults = false;
                 
+                if (navigator.vibrate) navigator.vibrate(50);
+
+                recognition = new SpeechRecognition();
+                recognition.lang = lang;
+                recognition.interimResults = false;
+                recognition.maxAlternatives = 1;
+
                 recognition.onstart = () => {
-                    els.status.innerText = "🎤 聆聽中...";
+                    els.status.innerText = "🎤 正在聆聽...";
                     els.status.style.color = "#ffeb3b";
                 };
 
-                recognition.onresult = (event) => {
-                    finalTranscript = event.results[0][0].transcript;
+                recognition.onerror = (event) => {
+                    let msg = `錯誤: ${event.error}`;
+                    if (event.error === 'not-allowed') msg = "❌ 麥克風權限被拒絕。請檢查瀏覽器設定。";
+                    if (event.error === 'network') msg = "❌ 網路連線問題 (Web Speech API 需要連網)";
+                    if (event.error === 'no-speech') msg = "⚠️ 沒聽到聲音，請再試一次";
+                    
+                    showError(msg);
+                    els.status.innerText = "錯誤";
                 };
 
-                recognition.onerror = (e) => { console.error(e); };
-                recognition.start();
+                recognition.onend = () => {
+                    if (isHolding) { // 如果還按著但斷了
+                         // 可選擇自動重啟，但簡單起見先不做
+                    }
+                };
+
+                recognition.onresult = (event) => {
+                    const text = event.results[0][0].transcript;
+                    if (text) translate(text, type);
+                };
+
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.error(e);
+                }
             };
 
             const end = (e) => {
@@ -310,20 +254,10 @@
                 if (!isHolding) return;
                 isHolding = false;
                 btn.classList.remove('active');
-                
                 if (recognition) {
                     recognition.stop();
-                    els.status.innerText = "翻譯中...";
-                    els.status.style.color = "#4caf50";
-
-                    setTimeout(() => {
-                        if (finalTranscript) {
-                            translateAndSpeak(finalTranscript, type);
-                        } else {
-                            els.status.innerText = "Gemini 2.5 Ready";
-                            els.status.style.color = "#888";
-                        }
-                    }, 200);
+                    els.status.innerText = "Gemini Ready";
+                    els.status.style.color = "#888";
                 }
             };
 
@@ -334,8 +268,14 @@
             btn.addEventListener('mouseleave', end);
         }
 
-        setupBtn(els.btnTW, 'cmn-Hant-TW', 'tw');
-        setupBtn(els.btnJP, 'ja-JP', 'jp');
+        function showError(msg) {
+            els.errorDisplay.innerText = msg;
+            els.errorDisplay.style.display = 'block';
+            console.error(msg);
+        }
+
+        setupBtn('btnTW', 'cmn-Hant-TW', 'tw');
+        setupBtn('btnJP', 'ja-JP', 'jp');
 
     </script>
 </body>
