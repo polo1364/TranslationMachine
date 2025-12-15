@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 隨身口譯機 (流式版)</title>
+    <title>AI 口譯機 (視覺打字版)</title>
     <script type="importmap">
       {
         "imports": {
@@ -63,7 +63,6 @@
             font-size: 20px; line-height: 1.4; 
             position: relative; cursor: pointer;
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            /* 讓打字時不會一直閃爍 */
             min-height: 24px;
         }
         
@@ -75,7 +74,7 @@
             color: #ffd60a; 
             border-top: 1px solid rgba(255,255,255,0.15);
             padding-top: 8px;
-            white-space: pre-wrap; /* 保留換行 */
+            white-space: pre-wrap;
         }
 
         /* 打字游標特效 */
@@ -178,7 +177,7 @@
         let currentBtn = null;
         let audioCtx = null; 
 
-        // --- 初始化 & Key 管理 ---
+        // --- 初始化 ---
         window.openModal = () => { document.getElementById('keyModal').style.display = 'flex'; };
 
         window.saveKey = () => {
@@ -218,7 +217,6 @@
             el.style.color = color;
         }
 
-        // --- 提示音 ---
         function playBeep() {
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -233,7 +231,7 @@
             osc.stop(audioCtx.currentTime + 0.1); 
         }
 
-        // --- 核心語音邏輯 ---
+        // --- 核心語音 ---
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
         function setupBtn(id, lang, type) {
@@ -262,7 +260,7 @@
             recognition = new SpeechRecognition();
             if (lang === 'ja-JP') {
                 recognition.lang = 'ja'; 
-                recognition.interimResults = false; // iOS 日文必須 false
+                recognition.interimResults = false;
                 recognition.maxAlternatives = 1;
             } else {
                 recognition.lang = lang;
@@ -270,7 +268,6 @@
             }
             recognition.continuous = false; 
 
-            // 建立氣泡
             let tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = `msg ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
             tempMsgDiv.innerHTML = `<span style="opacity:0.6;">...</span>`; 
@@ -323,13 +320,13 @@
             updateStatus("Ready");
         }
 
-        // --- 翻譯與朗讀 (修改為流式輸出) ---
+        // --- 翻譯與朗讀 (視覺打字緩衝版) ---
         async function processText(text, type, msgDiv) {
             if(!text.trim()) return;
             
             updateStatus("Translating...", "#ffd60a");
             
-            // 加入翻譯區塊，並加上 "typing" class 來顯示游標
+            // 準備翻譯區塊
             msgDiv.innerHTML += `<div class="translation typing"></div>`;
             const transEl = msgDiv.querySelector('.translation');
             const screen = document.getElementById('screen');
@@ -341,34 +338,34 @@
             try {
                 if(!model) throw new Error("API Key unset");
                 
-                // 🔥 改為 generateContentStream (流式傳輸)
+                // 1. 開始接收資料流
                 const result = await model.generateContentStream(`Translate to ${target}: "${text}"`);
                 
-                let fullText = "";
-                
+                let fullTextBuffer = ""; // 儲存所有收到的文字
+                let displayedText = "";  // 已經顯示在螢幕上的文字
+                let streamFinished = false;
+
+                // 2. 啟動視覺打字機迴圈 (Visual Typer)
+                // 不管網路多快，每 50ms 吐一個字，保證有動畫效果
+                const typeInterval = setInterval(() => {
+                    // 如果還有字沒顯示完
+                    if (displayedText.length < fullTextBuffer.length) {
+                        displayedText += fullTextBuffer[displayedText.length];
+                        transEl.innerText = displayedText;
+                        screen.scrollTop = screen.scrollHeight;
+                    } 
+                    // 如果資料流結束且字都印完了
+                    else if (streamFinished && displayedText.length === fullTextBuffer.length) {
+                        clearInterval(typeInterval);
+                        finalizeTranslation(transEl, fullTextBuffer, speakLang, msgDiv);
+                    }
+                }, 50); // 設定打字速度：50毫秒一個字
+
+                // 3. 接收網路封包 (背景執行)
                 for await (const chunk of result.stream) {
-                    const chunkText = chunk.text();
-                    fullText += chunkText;
-                    // 即時更新文字
-                    transEl.innerText = fullText;
-                    screen.scrollTop = screen.scrollHeight;
+                    fullTextBuffer += chunk.text();
                 }
-                
-                // 移除游標動畫，並加上喇叭圖示
-                transEl.classList.remove('typing');
-                transEl.innerHTML = `${fullText} <span class="speaker-icon">🔊</span>`;
-                
-                updateStatus("Done");
-                
-                // 自動朗讀
-                speak(fullText, speakLang);
-                
-                // 點擊重播
-                msgDiv.onclick = () => {
-                    speak(fullText, speakLang);
-                    msgDiv.style.opacity = '0.7';
-                    setTimeout(() => msgDiv.style.opacity = '1', 100);
-                };
+                streamFinished = true; // 標記網路傳輸結束
 
             } catch(e) { 
                 transEl.innerText = "Error";
@@ -376,6 +373,23 @@
                 updateStatus("Check Key", "#ff453a");
                 openModal();
             }
+        }
+
+        function finalizeTranslation(el, text, lang, container) {
+            // 移除游標，顯示喇叭
+            el.classList.remove('typing');
+            el.innerHTML = `${text} <span class="speaker-icon">🔊</span>`;
+            updateStatus("Done");
+            
+            // 朗讀
+            speak(text, lang);
+            
+            // 綁定重播
+            container.onclick = () => {
+                speak(text, lang);
+                container.style.opacity = '0.7';
+                setTimeout(() => container.style.opacity = '1', 100);
+            };
         }
 
         function speak(text, lang) {
