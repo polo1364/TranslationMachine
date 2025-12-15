@@ -359,9 +359,9 @@
             let transEl = null;
             let lastTranslatedText = '';
             let translateDebounceTimer = null;
-            let currentTranslateController = null;
-            let isFinalReceived = false;
+            let isFinalized = false;
             let speakLangCode = '';
+            let lastTranslatedResult = ''; // 保存最後翻譯結果
             
             // 預先建立翻譯區塊
             function ensureTranslationElement() {
@@ -374,23 +374,53 @@
                 return transEl;
             }
             
+            // 完成並停止游標
+            function finishTranslation() {
+                if (isFinalized) return;
+                isFinalized = true;
+                
+                const el = ensureTranslationElement();
+                el.classList.remove('typing');
+                
+                const finalText = lastTranslatedResult || el.innerText;
+                if (finalText) {
+                    el.innerHTML = `${finalText} <span style="font-size:16px; margin-left:5px;">🔊</span>`;
+                    updateStatus("Done");
+                    speak(finalText, speakLangCode);
+                    
+                    tempMsgDiv.onclick = () => {
+                        speak(finalText, speakLangCode);
+                        tempMsgDiv.style.opacity = '0.6';
+                        setTimeout(() => tempMsgDiv.style.opacity = '1', 100);
+                    };
+                } else {
+                    el.classList.remove('typing');
+                    updateStatus("Ready");
+                }
+            }
+            
             // 即時翻譯函數
             async function translateRealtime(text, isFinal = false) {
-                if (!text.trim() || text === lastTranslatedText) return;
+                if (!text.trim()) return;
+                if (isFinalized) return; // 已完成就不再翻譯
+                
+                // 相同文字且不是最終版本，跳過
+                if (text === lastTranslatedText && !isFinal) return;
                 lastTranslatedText = text;
                 
-                // 取消進行中的翻譯
-                if (currentTranslateController) {
-                    currentTranslateController.abort();
+                // 設定語言
+                if (role === 'tw') {
+                    if (targetLangMode === 'ja') { speakLangCode = 'ja-JP'; } 
+                    else { speakLangCode = 'en-US'; }
+                } else {
+                    speakLangCode = 'zh-TW';
                 }
-                currentTranslateController = new AbortController();
                 
                 let targetLangName;
                 if (role === 'tw') {
-                    if (targetLangMode === 'ja') { targetLangName = 'Japanese'; speakLangCode = 'ja-JP'; } 
-                    else { targetLangName = 'English'; speakLangCode = 'en-US'; }
+                    targetLangName = targetLangMode === 'ja' ? 'Japanese' : 'English';
                 } else {
-                    targetLangName = 'Traditional Chinese'; speakLangCode = 'zh-TW';
+                    targetLangName = 'Traditional Chinese';
                 }
                 
                 try {
@@ -402,14 +432,17 @@
                     
                     let translatedText = '';
                     for await (const chunk of result.stream) {
+                        if (isFinalized) break; // 如果已完成就停止
                         translatedText += chunk.text();
                         el.innerText = translatedText;
                         screen.scrollTop = screen.scrollHeight;
                     }
                     
+                    lastTranslatedResult = translatedText;
+                    
                     // 如果是最終結果，完成翻譯
-                    if (isFinal && isFinalReceived) {
-                        finalizeTranslation(el, translatedText, speakLangCode, tempMsgDiv);
+                    if (isFinal) {
+                        finishTranslation();
                     }
                 } catch(e) {
                     if (e.name !== 'AbortError') {
@@ -445,7 +478,6 @@
                 }
                 
                 if (finalTranscript) {
-                    isFinalReceived = true;
                     // 清除之前的內容，設定最終原文
                     const el = ensureTranslationElement();
                     while (tempMsgDiv.firstChild !== el) {
@@ -472,6 +504,13 @@
             recognition.onend = () => { 
                 stopRecording(); 
                 clearTimeout(translateDebounceTimer);
+                
+                // 確保翻譯結束後游標停止
+                setTimeout(() => {
+                    if (!isFinalized && transEl) {
+                        finishTranslation();
+                    }
+                }, 2000); // 給翻譯 2 秒完成時間
             };
             recognition.onerror = (e) => {
                 stopRecording();
@@ -493,20 +532,6 @@
         }
 
         // --- 即時翻譯模式 (已整合到 startRecording 中) ---
-
-        function finalizeTranslation(el, text, lang, container) {
-            el.classList.remove('typing');
-            el.innerHTML = `${text} <span style="font-size:16px; margin-left:5px;">🔊</span>`;
-            updateStatus("Done");
-            
-            speak(text, lang);
-            
-            container.onclick = () => {
-                speak(text, lang);
-                container.style.opacity = '0.6';
-                setTimeout(() => container.style.opacity = '1', 100);
-            };
-        }
 
         function speak(text, lang) {
             window.speechSynthesis.cancel();
