@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 雙語口譯機</title>
+    <title>AI 雙語口譯機 (打字增強版)</title>
     <script type="importmap">
       {
         "imports": {
@@ -16,8 +16,8 @@
             --bg-color: #000000;
             --card-bg: #1c1c1e;
             --btn-blue: #0a84ff;
-            --btn-red: #ff453a;   /* 日文紅 */
-            --btn-purple: #bf5af2; /* 英文紫 */
+            --btn-red: #ff453a;
+            --btn-purple: #bf5af2;
             --text: #ffffff;
             --gray: #8e8e93;
         }
@@ -33,7 +33,7 @@
             -webkit-user-select: none; user-select: none;
         }
 
-        /* 頂部導航 (⚙️ 設定鈕回來了) */
+        /* 頂部導航 */
         .navbar {
             padding: 10px 15px; background: var(--bg-color);
             display: flex; justify-content: space-between; align-items: center;
@@ -60,7 +60,6 @@
             font-size: 14px; letter-spacing: 1px;
         }
 
-        /* 訊息氣泡 */
         .msg {
             padding: 14px 18px; border-radius: 20px; max-width: 85%;
             font-size: 20px; line-height: 1.4; 
@@ -82,7 +81,7 @@
         /* 打字特效游標 */
         .typing::after {
             content: '▋'; display: inline-block; vertical-align: bottom;
-            animation: blink 1s infinite; color: #ffd60a; font-size: 18px; margin-left: 2px;
+            animation: blink 0.8s infinite; color: #ffd60a; font-size: 20px; margin-left: 2px;
         }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
@@ -95,7 +94,7 @@
             padding-top: 15px;
         }
 
-        /* 語言切換開關 */
+        /* 語言切換 */
         .lang-switch {
             display: flex; background: #2c2c2e; border-radius: 20px; padding: 4px; margin-bottom: 20px;
         }
@@ -104,13 +103,10 @@
             color: #888; cursor: pointer; transition: all 0.2s; text-align: center; width: 60px;
         }
         .lang-btn.active { background: #4a4a4c; color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
-        .lang-btn.active[data-lang="en"] { color: var(--btn-purple); } /* 英文選中變紫 */
-        .lang-btn.active[data-lang="ja"] { color: var(--btn-red); }    /* 日文選中變紅 */
+        .lang-btn.active[data-lang="en"] { color: var(--btn-purple); }
+        .lang-btn.active[data-lang="ja"] { color: var(--btn-red); }
 
-        /* 按鈕容器 */
-        .btn-container {
-            display: flex; justify-content: space-evenly; width: 100%;
-        }
+        .btn-container { display: flex; justify-content: space-evenly; width: 100%; }
 
         .tap-btn {
             width: 110px; height: 110px; border-radius: 50%;
@@ -127,14 +123,11 @@
         }
 
         .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: 400; }
-
         .tap-btn.recording { transform: scale(1.1); }
         
-        /* 藍色按鈕 (我) */
         .btn-tw.recording { background: var(--btn-blue); box-shadow: 0 0 30px rgba(10, 132, 255, 0.4); }
         .btn-tw.recording::after { border-color: var(--btn-blue); }
         
-        /* 對方按鈕 (紅色/紫色) */
         .btn-other.jp-mode.recording { background: var(--btn-red); box-shadow: 0 0 30px rgba(255, 69, 58, 0.4); }
         .btn-other.jp-mode.recording::after { border-color: var(--btn-red); }
 
@@ -205,7 +198,7 @@
         let currentBtn = null;
         let audioCtx = null; 
         
-        // 目前模式：'ja' (日文) 或 'en' (英文)
+        // 預設模式：日文
         let targetLangMode = 'ja';
 
         // --- 初始化 & Key 管理 ---
@@ -252,14 +245,12 @@
         window.switchLang = (lang) => {
             targetLangMode = lang;
             
-            // 更新 UI 樣式
             document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelector(`.lang-btn[data-lang="${lang}"]`).classList.add('active');
             
             const btnOther = document.getElementById('btnOther');
             const btnText = document.getElementById('btnOtherText');
             
-            // 移除所有舊顏色 class
             btnOther.classList.remove('jp-mode', 'en-mode');
             
             if (lang === 'ja') {
@@ -291,7 +282,6 @@
         // --- 核心語音邏輯 ---
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-        // 設定按鈕事件
         const btnTW = document.getElementById('btnTW');
         const btnOther = document.getElementById('btnOther');
 
@@ -302,7 +292,6 @@
             e.preventDefault();
             if(btnLock) return;
 
-            // 喚醒 TTS
             window.speechSynthesis.cancel(); 
             const empty = new SpeechSynthesisUtterance('');
             window.speechSynthesis.speak(empty);
@@ -312,12 +301,10 @@
                 return;
             }
 
-            // 決定語言代碼
             let langCode;
             if (role === 'tw') {
-                langCode = 'cmn-Hant-TW'; // 我講中文
+                langCode = 'cmn-Hant-TW'; 
             } else {
-                // 對方講什麼？看目前模式
                 langCode = targetLangMode === 'ja' ? 'ja-JP' : 'en-US';
             }
 
@@ -333,14 +320,12 @@
 
             recognition = new SpeechRecognition();
             
-            // 🔥 針對 iOS 的特殊設定 🔥
+            // iOS 日文相容設定 (日文強制關閉即時預覽)
             if (lang === 'ja-JP') {
-                // 日文模式：關閉即時字幕以防卡死
                 recognition.lang = 'ja'; 
                 recognition.interimResults = false; 
                 recognition.maxAlternatives = 1;
             } else {
-                // 中文或英文模式：可以開即時字幕
                 recognition.lang = lang;
                 recognition.interimResults = true;
             }
@@ -366,7 +351,6 @@
                 if (lang === 'ja-JP') label = "Listening (JP)...";
                 else if (lang === 'en-US') label = "Listening (EN)...";
                 else label = "Listening (TW)...";
-                
                 updateStatus(label, "#0a84ff");
             };
 
@@ -405,22 +389,20 @@
             updateStatus("Ready");
         }
 
-        // --- 翻譯與打字機特效 ---
+        // --- 翻譯與打字機特效 (修正版：強制逐字顯示) ---
         async function processText(text, role, msgDiv) {
             if(!text.trim()) return;
             
             updateStatus("Translating...", "#ffd60a");
             
+            // 加上翻譯區塊
             msgDiv.innerHTML += `<div class="translation typing"></div>`;
             const transEl = msgDiv.querySelector('.translation');
             const screen = document.getElementById('screen');
             screen.scrollTop = screen.scrollHeight;
             
-            // 決定目標語言
             let targetLangName, speakLangCode;
-            
             if (role === 'tw') {
-                // 我講中文 -> 翻成目標語言 (日或英)
                 if (targetLangMode === 'ja') {
                     targetLangName = 'Japanese';
                     speakLangCode = 'ja-JP';
@@ -429,7 +411,6 @@
                     speakLangCode = 'en-US';
                 }
             } else {
-                // 對方 (日或英) -> 翻成中文
                 targetLangName = 'Traditional Chinese';
                 speakLangCode = 'zh-TW';
             }
@@ -444,17 +425,26 @@
                 let displayedText = "";
                 let streamFinished = false;
 
-                // 2. 視覺打字緩衝 (Visual Buffer)
+                // 🔥 2. 強制排隊打字機 (速度設定為 80ms) 🔥
                 const typeInterval = setInterval(() => {
+                    // 如果顯示的字數 < 緩衝區字數，就再吐一個字
                     if (displayedText.length < fullTextBuffer.length) {
-                        displayedText += fullTextBuffer[displayedText.length];
-                        transEl.innerText = displayedText;
-                        screen.scrollTop = screen.scrollHeight;
-                    } else if (streamFinished && displayedText.length === fullTextBuffer.length) {
+                        // 使用 Array.from 避免切斷 emoji 或特殊日文字元
+                        const chars = Array.from(fullTextBuffer);
+                        const displayedChars = Array.from(displayedText);
+                        
+                        if (displayedChars.length < chars.length) {
+                            displayedText += chars[displayedChars.length];
+                            transEl.innerText = displayedText;
+                            screen.scrollTop = screen.scrollHeight;
+                        }
+                    } 
+                    // 如果串流結束，且所有字都印完了，就停止動畫
+                    else if (streamFinished && displayedText.length >= fullTextBuffer.length) {
                         clearInterval(typeInterval);
                         finalizeTranslation(transEl, fullTextBuffer, speakLangCode, msgDiv);
                     }
-                }, 40); // 速度：每40ms一個字
+                }, 80); // 80毫秒 = 比較慢，日文會很有感
 
                 // 3. 接收資料
                 for await (const chunk of result.stream) {
