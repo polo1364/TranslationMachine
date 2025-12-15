@@ -326,15 +326,9 @@
 
             recognition = new SpeechRecognition();
             
-            // iOS Fix: 日文關閉即時預覽
-            if (lang === 'ja-JP') {
-                recognition.lang = 'ja'; 
-                recognition.interimResults = false; 
-                recognition.maxAlternatives = 1;
-            } else {
-                recognition.lang = lang;
-                recognition.interimResults = true;
-            }
+            recognition.lang = lang === 'ja-JP' ? 'ja' : lang;
+            recognition.interimResults = true; // 所有語言都啟用逐字顯示
+            recognition.maxAlternatives = 1;
             recognition.continuous = false; 
 
             // Create Bubble
