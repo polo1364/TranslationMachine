@@ -153,6 +153,41 @@
             border-radius: 10px; color: white; font-weight: bold; font-size: 16px; cursor: pointer;
         }
 
+        /* 音量指示器 */
+        .volume-meter {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 20px;
+            margin-bottom: 15px;
+        }
+        .volume-meter.active { display: flex; }
+        .volume-meter-label { font-size: 11px; color: #8e8e93; }
+        .volume-bars {
+            display: flex;
+            gap: 2px;
+            align-items: flex-end;
+            height: 20px;
+        }
+        .volume-bar {
+            width: 4px;
+            background: #3a3a3c;
+            border-radius: 2px;
+            transition: height 0.05s, background 0.1s;
+        }
+        .volume-bar.active { background: #32d74b; }
+        .volume-bar.high { background: #ff9500; }
+        .volume-bar.peak { background: #ff3b30; }
+        .volume-level {
+            font-size: 11px;
+            color: #32d74b;
+            min-width: 28px;
+            text-align: right;
+            font-weight: 600;
+        }
+
     </style>
 </head>
 <body>
@@ -170,6 +205,24 @@
     </div>
 
     <div class="controls">
+        <!-- 音量指示器 -->
+        <div class="volume-meter" id="volumeMeter">
+            <span class="volume-meter-label">🎤</span>
+            <div class="volume-bars" id="volumeBars">
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+                <div class="volume-bar" style="height: 4px;"></div>
+            </div>
+            <span class="volume-level" id="volumeLevel">0%</span>
+        </div>
+
         <div class="lang-switch-container">
             <div class="lang-option active" data-lang="ja" onclick="switchLang('ja')">🇯🇵 日文</div>
             <div class="lang-option" data-lang="en" onclick="switchLang('en')">🇺🇸 英文</div>
@@ -206,6 +259,95 @@
         let audioCtx = null; 
         
         let targetLangMode = 'ja';
+
+        // --- 音量監測 ---
+        let volumeAudioCtx = null;
+        let volumeAnalyser = null;
+        let volumeMicStream = null;
+        let volumeAnimationId = null;
+
+        async function startVolumeMeter() {
+            try {
+                volumeMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                volumeAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                volumeAnalyser = volumeAudioCtx.createAnalyser();
+                volumeAnalyser.fftSize = 256;
+                
+                const source = volumeAudioCtx.createMediaStreamSource(volumeMicStream);
+                source.connect(volumeAnalyser);
+                
+                document.getElementById('volumeMeter').classList.add('active');
+                updateVolumeMeter();
+            } catch(e) {
+                console.error('Volume meter error:', e);
+            }
+        }
+
+        function updateVolumeMeter() {
+            if (!volumeAnalyser) return;
+            
+            const dataArray = new Uint8Array(volumeAnalyser.frequencyBinCount);
+            volumeAnalyser.getByteFrequencyData(dataArray);
+            
+            // 計算平均音量
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / dataArray.length;
+            const volumePercent = Math.min(100, Math.round((average / 128) * 100));
+            
+            // 更新音量條
+            const bars = document.querySelectorAll('.volume-bar');
+            const activeCount = Math.ceil((volumePercent / 100) * bars.length);
+            
+            bars.forEach((bar, i) => {
+                const height = 4 + (i * 1.6); // 漸高
+                bar.style.height = height + 'px';
+                bar.classList.remove('active', 'high', 'peak');
+                
+                if (i < activeCount) {
+                    if (i >= 8) bar.classList.add('peak');
+                    else if (i >= 6) bar.classList.add('high');
+                    else bar.classList.add('active');
+                }
+            });
+            
+            // 更新百分比
+            const levelEl = document.getElementById('volumeLevel');
+            levelEl.textContent = volumePercent + '%';
+            if (volumePercent >= 80) levelEl.style.color = '#ff3b30';
+            else if (volumePercent >= 50) levelEl.style.color = '#ff9500';
+            else if (volumePercent >= 20) levelEl.style.color = '#32d74b';
+            else levelEl.style.color = '#8e8e93';
+            
+            volumeAnimationId = requestAnimationFrame(updateVolumeMeter);
+        }
+
+        function stopVolumeMeter() {
+            if (volumeAnimationId) {
+                cancelAnimationFrame(volumeAnimationId);
+                volumeAnimationId = null;
+            }
+            if (volumeMicStream) {
+                volumeMicStream.getTracks().forEach(track => track.stop());
+                volumeMicStream = null;
+            }
+            if (volumeAudioCtx) {
+                volumeAudioCtx.close();
+                volumeAudioCtx = null;
+                volumeAnalyser = null;
+            }
+            document.getElementById('volumeMeter').classList.remove('active');
+            
+            // 重置音量條
+            const bars = document.querySelectorAll('.volume-bar');
+            bars.forEach(bar => {
+                bar.classList.remove('active', 'high', 'peak');
+                bar.style.height = '4px';
+            });
+            document.getElementById('volumeLevel').textContent = '0%';
+        }
 
         // --- Init ---
         window.openModal = () => document.getElementById('keyModal').style.display = 'flex';
@@ -321,14 +463,15 @@
             if(recognition) { try { recognition.abort(); } catch(e){} }
             
             playBeep();
+            startVolumeMeter(); // 開啟音量監測
             btnLock = true;
             setTimeout(() => btnLock = false, 300);
 
             recognition = new SpeechRecognition();
             
-            recognition.lang = lang === 'ja-JP' ? 'ja' : lang;
+            recognition.lang = lang; // 使用完整語言代碼 (ja-JP, en-US, cmn-Hant-TW)
             recognition.interimResults = true; // 所有語言都啟用逐字顯示
-            recognition.maxAlternatives = 1;
+            recognition.maxAlternatives = 3; // 增加備選結果，提高準確度
             recognition.continuous = true; // 持續聽取，直到用戶手動停止 
 
             // Create Bubble
@@ -536,6 +679,7 @@
             isRecording = false;
             if(currentBtn) currentBtn.classList.remove('recording');
             currentBtn = null;
+            stopVolumeMeter(); // 關閉音量監測
             updateStatus("Ready");
         }
 
