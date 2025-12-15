@@ -329,12 +329,12 @@
             recognition.lang = lang === 'ja-JP' ? 'ja' : lang;
             recognition.interimResults = true; // 所有語言都啟用逐字顯示
             recognition.maxAlternatives = 1;
-            recognition.continuous = false; 
+            recognition.continuous = true; // 持續聽取，直到用戶手動停止 
 
             // Create Bubble
             let tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = `msg ${role === 'tw' ? 'msg-me' : 'msg-other'}`;
-            tempMsgDiv.innerHTML = `<span style="opacity:0.6;">...</span>`; 
+            tempMsgDiv.innerHTML = `<span class="original-text" style="opacity:0.6;">正在聆聽...</span>`; 
             
             const screen = document.getElementById('screen');
             screen.appendChild(tempMsgDiv);
@@ -362,6 +362,7 @@
             let isFinalized = false;
             let speakLangCode = '';
             let lastTranslatedResult = ''; // 保存最後翻譯結果
+            let accumulatedText = ''; // 累積所有已確認的文字
             
             // 預先建立翻譯區塊
             function ensureTranslationElement() {
@@ -454,50 +455,50 @@
             recognition.onresult = (event) => {
                 let finalTranscript = '';
                 let interimTranscript = '';
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
-                    else interimTranscript += event.results[i][0].transcript;
+                
+                // 從所有結果中收集文字
+                for (let i = 0; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
                 }
                 
-                const currentText = finalTranscript || interimTranscript;
+                // 完整的當前文字 = 已確認 + 暫時
+                const fullText = finalTranscript + interimTranscript;
                 
                 // 更新顯示的原文
-                if (interimTranscript && !finalTranscript) {
-                    // 確保翻譯區塊已存在
-                    const el = ensureTranslationElement();
-                    tempMsgDiv.firstChild.textContent = interimTranscript;
-                    if (tempMsgDiv.firstChild.tagName !== 'SPAN') {
-                        const span = document.createElement('span');
-                        span.style.opacity = '0.7';
-                        span.textContent = interimTranscript;
-                        tempMsgDiv.insertBefore(span, tempMsgDiv.firstChild);
-                        if (tempMsgDiv.childNodes[1] && tempMsgDiv.childNodes[1].nodeType === 3) {
-                            tempMsgDiv.childNodes[1].remove();
-                        }
-                    }
+                const el = ensureTranslationElement();
+                
+                // 找到或創建原文顯示區
+                let originalTextEl = tempMsgDiv.querySelector('.original-text');
+                if (!originalTextEl) {
+                    originalTextEl = document.createElement('span');
+                    originalTextEl.className = 'original-text';
+                    tempMsgDiv.insertBefore(originalTextEl, el);
                 }
                 
-                if (finalTranscript) {
-                    // 清除之前的內容，設定最終原文
-                    const el = ensureTranslationElement();
-                    while (tempMsgDiv.firstChild !== el) {
-                        tempMsgDiv.removeChild(tempMsgDiv.firstChild);
-                    }
-                    tempMsgDiv.insertBefore(document.createTextNode(finalTranscript), el);
+                // 顯示完整文字，暫時部分用較淡顏色
+                if (interimTranscript) {
+                    originalTextEl.innerHTML = `${finalTranscript}<span style="opacity:0.6">${interimTranscript}</span>`;
+                } else {
+                    originalTextEl.textContent = finalTranscript;
                 }
+                
+                // 保存累積文字
+                accumulatedText = fullText;
                 
                 screen.scrollTop = screen.scrollHeight;
                 
                 // 即時翻譯 (使用 debounce 避免過於頻繁)
                 clearTimeout(translateDebounceTimer);
-                if (finalTranscript) {
-                    // 最終結果立即翻譯
-                    translateRealtime(finalTranscript, true);
-                } else if (interimTranscript && interimTranscript.length > 2) {
-                    // 暫時結果延遲 300ms 翻譯
+                
+                if (fullText && fullText.length > 3) {
+                    // 延遲 600ms 翻譯，讓文字累積更完整
                     translateDebounceTimer = setTimeout(() => {
-                        translateRealtime(interimTranscript, false);
-                    }, 300);
+                        translateRealtime(fullText, false);
+                    }, 600);
                 }
             };
 
@@ -505,21 +506,28 @@
                 stopRecording(); 
                 clearTimeout(translateDebounceTimer);
                 
-                // 確保翻譯結束後游標停止
-                setTimeout(() => {
-                    if (!isFinalized && transEl) {
-                        finishTranslation();
+                // 用戶停止錄音，執行最終翻譯
+                if (accumulatedText && accumulatedText.trim()) {
+                    // 更新原文顯示為最終版本
+                    const originalTextEl = tempMsgDiv.querySelector('.original-text');
+                    if (originalTextEl) {
+                        originalTextEl.textContent = accumulatedText;
                     }
-                }, 2000); // 給翻譯 2 秒完成時間
+                    // 執行最終翻譯並播放
+                    translateRealtime(accumulatedText, true);
+                } else if (transEl) {
+                    finishTranslation();
+                }
             };
             recognition.onerror = (e) => {
                 stopRecording();
+                clearTimeout(translateDebounceTimer);
                 if(e.error === 'aborted' || e.error === 'no-speech') {
-                    if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
+                    if(!accumulatedText) tempMsgDiv.remove();
                     return;
                 }
                 updateStatus("請再試一次", "#ff3b30");
-                if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
+                if(!accumulatedText) tempMsgDiv.remove();
             };
             try { recognition.start(); } catch(e) { btnLock = false; }
         }
