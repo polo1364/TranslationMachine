@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>手機版口譯機</title>
+    <title>iOS 穩定版口譯機</title>
     <script type="importmap">
       {
         "imports": {
@@ -13,8 +13,8 @@
     </script>
     <style>
         :root {
-            --bg-color: #121212;
-            --btn-blue: #2d7aff;
+            --bg-color: #000000;
+            --btn-blue: #0a84ff;
             --btn-red: #ff453a;
             --text: #ffffff;
         }
@@ -26,107 +26,123 @@
             display: flex; flex-direction: column; height: 100vh;
             color: var(--text);
             overflow: hidden;
+            /* iOS 重要設定：防止雙擊放大 */
             touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
         }
 
         /* 狀態列 */
         .status-bar {
-            padding: 15px; text-align: center; background: #1e1e1e;
-            font-size: 16px; font-weight: bold; color: #888;
+            padding: 15px; text-align: center; background: #1c1c1e;
+            font-size: 15px; font-weight: bold; color: #888;
             border-bottom: 1px solid #333;
+            min-height: 20px;
         }
 
-        /* 錯誤訊息 (重要) */
+        /* 錯誤訊息 */
         .debug-info {
-            font-size: 12px; color: #ff6b6b; padding: 5px;
-            text-align: center; display: none; background: rgba(50,0,0,0.5);
+            font-size: 13px; color: #ff6b6b; padding: 8px;
+            text-align: center; display: none; background: rgba(50,0,0,0.8);
+            position: fixed; top: 50px; left: 0; width: 100%; z-index: 99;
         }
 
-        /* 螢幕 */
+        /* 螢幕顯示區 */
         .screen {
             flex: 1; padding: 20px; overflow-y: auto;
             display: flex; flex-direction: column; gap: 15px;
+            /* 讓捲動順暢 */
+            -webkit-overflow-scrolling: touch;
         }
 
         .msg {
-            padding: 10px 15px; border-radius: 12px; max-width: 80%;
-            font-size: 18px; line-height: 1.4; animation: pop 0.3s;
+            padding: 12px 16px; border-radius: 16px; max-width: 85%;
+            font-size: 19px; line-height: 1.4; animation: pop 0.2s;
         }
         @keyframes pop { from{transform:scale(0.9);opacity:0;} to{transform:scale(1);opacity:1;} }
 
         .msg-me { align-self: flex-end; background: var(--btn-blue); color: #fff; }
-        .msg-other { align-self: flex-start; background: #333; color: #fff; border: 1px solid #444; }
+        .msg-other { align-self: flex-start; background: #333; color: #fff; }
 
         .translation {
-            font-size: 20px; font-weight: bold; margin-top: 5px;
-            color: #ffe066; /* 翻譯結果亮黃色 */
+            font-size: 21px; font-weight: 700; margin-top: 6px;
+            color: #ffd700; /* 金黃色 */
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 6px;
         }
 
         /* 按鈕區 */
         .controls {
-            height: 200px; background: #1c1c1e;
+            height: 220px; background: #1c1c1e;
             display: flex; justify-content: space-around; align-items: center;
-            padding-bottom: 20px; border-top: 1px solid #333;
+            padding-bottom: 30px; border-top: 1px solid #333;
         }
 
         .tap-btn {
-            width: 120px; height: 120px; border-radius: 50%;
-            border: 4px solid #444; background: #2c2c2e;
-            color: white; font-size: 18px; font-weight: bold;
+            width: 130px; height: 130px; border-radius: 50%;
+            border: 3px solid #444; background: #2c2c2e;
+            color: white; font-size: 20px; font-weight: bold;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
             transition: all 0.2s;
+            cursor: pointer;
+            /* 移除點擊高亮 */
+            -webkit-tap-highlight-color: transparent;
         }
 
-        /* 錄音中的狀態 */
+        .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: normal; }
+
+        /* 錄音中特效 */
         .tap-btn.recording {
             border-color: #fff;
-            animation: pulse 1.5s infinite;
             transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(255,255,255,0.2);
         }
         
-        .btn-tw.recording { background: var(--btn-blue); box-shadow: 0 0 20px var(--btn-blue); }
-        .btn-jp.recording { background: var(--btn-red); box-shadow: 0 0 20px var(--btn-red); }
+        .btn-tw.recording { background: var(--btn-blue); }
+        .btn-jp.recording { background: var(--btn-red); }
 
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        /* 鎖定狀態 (防止連點) */
+        .tap-btn.locked { opacity: 0.5; pointer-events: none; }
 
         /* Modal */
         .modal {
             position: fixed; top:0; left:0; width:100%; height:100%;
-            background: rgba(0,0,0,0.8); z-index: 99; display: flex;
+            background: rgba(0,0,0,0.85); z-index: 999; display: flex;
             justify-content: center; align-items: center;
         }
-        .modal-box { background: #333; padding: 20px; border-radius: 10px; width: 80%; text-align: center; }
-        input { width: 90%; padding: 10px; margin: 10px 0; font-size: 16px; }
-        button { padding: 10px 20px; font-size: 16px; background: var(--btn-blue); color: white; border: none; border-radius: 5px; }
+        .modal-box { background: #2c2c2e; padding: 25px; border-radius: 16px; width: 80%; text-align: center; border: 1px solid #444; }
+        input { width: 90%; padding: 12px; margin: 15px 0; font-size: 16px; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; }
+        button { padding: 12px 24px; font-size: 16px; background: var(--btn-blue); color: white; border: none; border-radius: 8px; font-weight: bold; }
 
     </style>
 </head>
 <body>
 
-    <div class="status-bar" id="statusText">請點擊按鈕開始說話</div>
+    <div class="status-bar" id="statusText">就緒</div>
     <div class="debug-info" id="debugMsg"></div>
 
     <div class="screen" id="screen">
-        <div style="text-align:center; color:#555; margin-top:auto;">
-            點一下開始錄音，再點一下結束
+        <div style="text-align:center; color:#555; margin-top:auto; padding-bottom:20px;">
+            點擊按鈕開始 ➜ 講完自動停止
         </div>
     </div>
 
     <div class="controls">
         <div id="btnJP" class="tap-btn btn-jp">
             <span>JP</span>
-            <span style="font-size:12px; color:#aaa;">對方</span>
+            <span class="sub">對方</span>
         </div>
         <div id="btnTW" class="tap-btn btn-tw">
             <span>TW</span>
-            <span style="font-size:12px; color:#aaa;">我</span>
+            <span class="sub">我</span>
         </div>
     </div>
 
     <div id="keyModal" class="modal">
         <div class="modal-box">
-            <h3>🔑 輸入 API Key</h3>
-            <input type="password" id="apiKey" placeholder="Gemini API Key">
+            <h3 style="color:#fff; margin:0;">🔑 輸入 API Key</h3>
+            <p style="color:#aaa; font-size:13px;">請輸入 Google Gemini Key</p>
+            <input type="password" id="apiKey" placeholder="貼上 API Key">
             <button onclick="saveKey()">確定</button>
         </div>
     </div>
@@ -137,29 +153,36 @@
         let genAI, model;
         let recognition;
         let isRecording = false;
+        let btnLock = false; // 防止連點鎖
         let currentBtn = null;
 
         // --- 除錯工具 ---
         function log(msg, isError = false) {
             const debugEl = document.getElementById('debugMsg');
-            debugEl.style.display = 'block';
-            debugEl.innerText = msg;
-            if(isError) debugEl.style.color = '#ff4d4d';
-            else debugEl.style.color = '#4dff4d';
+            if(isError) {
+                // 如果是 aborted，我們選擇忽視它，除非你想看
+                if(msg.includes('aborted')) return; 
+                debugEl.style.display = 'block';
+                debugEl.innerText = msg;
+                setTimeout(() => debugEl.style.display = 'none', 3000); // 3秒後消失
+            } else {
+                // 成功訊息只顯示在狀態列，不擋畫面
+                document.getElementById('statusText').innerText = msg;
+            }
             console.log(msg);
         }
 
         // --- 初始化 API ---
         window.saveKey = () => {
-            const key = document.getElementById('apiKey').value;
+            const key = document.getElementById('apiKey').value.trim();
             if(key) {
-                localStorage.setItem('gemini_mobile_key', key);
+                localStorage.setItem('gemini_mobile_key_v2', key);
                 initAI(key);
                 document.getElementById('keyModal').style.display = 'none';
             }
         };
 
-        const savedKey = localStorage.getItem('gemini_mobile_key');
+        const savedKey = localStorage.getItem('gemini_mobile_key_v2');
         if(savedKey) {
             document.getElementById('apiKey').value = savedKey;
             initAI(savedKey);
@@ -171,55 +194,57 @@
                 genAI = new GoogleGenerativeAI(key);
                 model = genAI.getGenerativeModel({ 
                     model: "gemini-2.5-flash",
-                    systemInstruction: "你是一個口譯機。將輸入翻譯成目標語言。規則：道地、簡潔。"
+                    systemInstruction: "你是一個雙向口譯機。將輸入翻譯成目標語言(中文或日文)。規則：直接輸出翻譯結果，不要解釋。風格：自然口語。"
                 });
-                log("系統就緒 (HTTPS 檢查中...)");
+                log("系統就緒");
             } catch(e) { log("API Key 錯誤", true); }
         }
 
-        // --- 檢查瀏覽器支援 ---
+        // --- 檢查瀏覽器 ---
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if(!SpeechRecognition) {
-            log("❌ 您的瀏覽器不支援語音辨識 (iPhone請用Safari, Android請用Chrome)", true);
-            alert("❌ 瀏覽器不支援：\niPhone 請用 Safari\nAndroid 請用 Chrome\n不要用 Line/FB 開啟");
-        } else if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-            log("❌ 嚴重錯誤：網址非 HTTPS，麥克風將被封鎖", true);
-            alert("⚠️ 安全性警告 ⚠️\n手機無法在非 HTTPS 網址使用麥克風。\n請不要使用 IP (192.168...) 連線。");
+            alert("⚠️ 您的手機瀏覽器不支援語音辨識\n請使用 Chrome (Android) 或 Safari (iOS)");
         }
 
-        // --- 按鈕邏輯 (點擊切換) ---
+        // --- 核心：穩定的語音控制 ---
         function setupBtn(id, lang, type) {
             const btn = document.getElementById(id);
             
-            btn.onclick = () => {
-                // 如果正在錄音，則停止
+            btn.onclick = (e) => {
+                e.preventDefault(); // 防止觸發兩次
+
+                // 1. 防止連點 (冷卻時間)
+                if(btnLock) return;
+                
+                // 2. 如果正在錄音，點擊就是停止
                 if (isRecording) {
-                    if (currentBtn === btn) {
-                        stopRecording(); // 按同一個按鈕 -> 停止
-                    } else {
-                        // 按不同按鈕 -> 無視，或切換 (這裡先設為無視)
-                    }
-                } else {
-                    // 開始錄音
-                    startRecording(btn, lang, type);
+                    stopRecording();
+                    return;
                 }
+
+                // 3. 開始錄音
+                startRecording(btn, lang, type);
             };
         }
 
         function startRecording(btn, lang, type) {
             if(!SpeechRecognition) return;
-            
+
+            // 鎖住按鈕 0.5 秒，防止誤觸
+            btnLock = true;
+            setTimeout(() => btnLock = false, 500);
+
             recognition = new SpeechRecognition();
             recognition.lang = lang;
-            recognition.interimResults = false;
-            recognition.continuous = false; // 手機上設為 false 比較穩
+            recognition.interimResults = false; // iOS 建議關閉即時預覽，比較穩
+            recognition.continuous = false;     // iOS 必須設為 false，講完一句自動停
 
             recognition.onstart = () => {
                 isRecording = true;
                 currentBtn = btn;
                 btn.classList.add('recording');
                 document.getElementById('statusText').innerText = "🎤 聆聽中...";
-                log("麥克風啟動成功");
+                document.getElementById('statusText').style.color = "#0a84ff";
             };
 
             recognition.onend = () => {
@@ -227,11 +252,12 @@
             };
 
             recognition.onerror = (e) => {
+                // 默默停止，不要噴錯
                 stopRecording();
-                let err = e.error;
-                if(err === 'not-allowed') err = "麥克風權限被拒絕 (請檢查設定)";
-                if(err === 'network') err = "網路連線失敗 (API需要連網)";
-                log(`❌ 錯誤: ${err}`, true);
+                let msg = e.error;
+                if(msg === 'not-allowed') log("❌ 麥克風權限被拒 (請去設定開啟)", true);
+                else if(msg === 'network') log("❌ 無網路連線", true);
+                else if(msg !== 'aborted' && msg !== 'no-speech') log("❌ " + msg, true);
             };
 
             recognition.onresult = (e) => {
@@ -242,23 +268,27 @@
             try {
                 recognition.start();
             } catch(e) {
-                log("啟動失敗: " + e.message, true);
+                console.error(e);
+                btnLock = false;
             }
         }
 
         function stopRecording() {
-            if(recognition) recognition.stop();
+            if(recognition) {
+                try { recognition.stop(); } catch(e){}
+            }
             isRecording = false;
             if(currentBtn) currentBtn.classList.remove('recording');
             currentBtn = null;
-            document.getElementById('statusText').innerText = "請點擊按鈕開始說話";
+            document.getElementById('statusText').innerText = "就緒";
+            document.getElementById('statusText').style.color = "#888";
         }
 
         // --- 翻譯與顯示 ---
         async function processText(text, type) {
             if(!text.trim()) return;
             
-            // UI 顯示
+            // UI
             const screen = document.getElementById('screen');
             const div = document.createElement('div');
             div.className = `msg ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
@@ -269,20 +299,26 @@
             const target = type === 'tw' ? 'Japanese' : 'Traditional Chinese';
             
             try {
+                if(!model) throw new Error("API Key unset");
                 const result = await model.generateContent(`Translate to ${target}: "${text}"`);
                 const transText = result.response.text();
                 
                 div.querySelector('.translation').innerText = transText;
                 
-                // 朗讀
-                const u = new SpeechSynthesisUtterance(transText);
-                u.lang = type === 'tw' ? 'ja-JP' : 'zh-TW';
-                window.speechSynthesis.speak(u);
+                // 播放語音
+                speak(transText, type === 'tw' ? 'ja-JP' : 'zh-TW');
 
             } catch(e) {
                 div.querySelector('.translation').innerText = "翻譯失敗";
-                log("API 錯誤: " + e.message, true);
+                log("API Error", true);
             }
+        }
+
+        function speak(text, lang) {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = lang;
+            window.speechSynthesis.speak(u);
         }
 
         setupBtn('btnTW', 'cmn-Hant-TW', 'tw');
