@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>高靈敏口譯機 (朗讀增強版)</title>
+    <title>日文修復版口譯機</title>
     <script type="importmap">
       {
         "imports": {
@@ -47,11 +47,8 @@
         .msg {
             padding: 12px 16px; border-radius: 16px; max-width: 85%;
             font-size: 20px; line-height: 1.4; animation: pop 0.2s;
-            position: relative;
-            cursor: pointer; /* 讓使用者知道可以點 */
-            transition: opacity 0.2s;
+            position: relative; cursor: pointer;
         }
-        .msg:active { opacity: 0.7; }
         
         @keyframes pop { from{transform:scale(0.95);opacity:0.5;} to{transform:scale(1);opacity:1;} }
 
@@ -61,13 +58,11 @@
         .translation {
             font-size: 22px; font-weight: 700; margin-top: 8px;
             color: #ffd700; border-top: 1px solid rgba(255,255,255,0.2);
-            padding-top: 6px; display: flex; align-items: center; justify-content: space-between;
+            padding-top: 6px;
         }
         
-        .speaker-icon { font-size: 18px; opacity: 0.8; margin-left: 8px; }
-
-        /* 即時預覽文字 (灰色) */
-        .interim { color: rgba(255,255,255,0.6); font-style: italic; }
+        /* 偵測狀態顯示 */
+        .debug-status { font-size: 12px; color: #aaa; margin-top: 5px; font-style: italic; }
 
         /* 按鈕區 */
         .controls {
@@ -85,7 +80,6 @@
         }
         .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: normal; }
 
-        /* 錄音中特效 */
         .tap-btn.recording {
             border-color: #fff; transform: scale(1.1);
             box-shadow: 0 0 25px rgba(255,255,255,0.3);
@@ -107,12 +101,11 @@
 </head>
 <body>
 
-    <div class="status-bar" id="statusText">就緒</div>
+    <div class="status-bar" id="statusText">請點擊按鈕</div>
 
     <div class="screen" id="screen">
         <div style="text-align:center; color:#555; margin-top:auto; padding-bottom:20px;">
-            聽到「嗶」聲後開始說話<br>
-            <span style="font-size:12px; color:#444;">(點擊氣泡可重聽發音)</span>
+            如果日文沒反應，請檢查手機鍵盤設定
         </div>
     </div>
 
@@ -130,7 +123,6 @@
     <div id="keyModal" class="modal">
         <div class="modal-box">
             <h3 style="color:#fff; margin:0;">🔑 輸入 API Key</h3>
-            <p style="color:#aaa; font-size:13px;">請輸入 Google Gemini Key</p>
             <input type="password" id="apiKey" placeholder="貼上 API Key">
             <button onclick="saveKey()">確定</button>
         </div>
@@ -168,26 +160,21 @@
                 genAI = new GoogleGenerativeAI(key);
                 model = genAI.getGenerativeModel({ 
                     model: "gemini-2.5-flash",
-                    systemInstruction: "你是一個雙向口譯機。將輸入翻譯成目標語言(中文或日文)。規則：直接輸出翻譯結果，不要解釋。風格：自然口語。"
+                    systemInstruction: "你是一個雙向口譯機。將輸入翻譯成目標語言。規則：直接輸出翻譯結果。"
                 });
             } catch(e) { alert("Key Error"); }
         }
 
-        // --- 發出「嗶」聲 (並喚醒 Audio Context) ---
         function playBeep() {
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             if (audioCtx.state === 'suspended') audioCtx.resume();
-
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
-            
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
-            
             oscillator.type = 'sine';
             oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
             gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-            
             oscillator.start();
             oscillator.stop(audioCtx.currentTime + 0.1); 
         }
@@ -197,13 +184,11 @@
 
         function setupBtn(id, lang, type) {
             const btn = document.getElementById(id);
-            
             btn.onclick = (e) => {
                 e.preventDefault();
                 if(btnLock) return;
 
-                // 🔥 關鍵修正：點擊按鈕時，立刻喚醒語音合成引擎
-                // 這能大幅增加 iOS 自動朗讀成功的機率
+                // 點擊瞬間喚醒 TTS
                 window.speechSynthesis.cancel(); 
                 const empty = new SpeechSynthesisUtterance('');
                 window.speechSynthesis.speak(empty);
@@ -212,7 +197,6 @@
                     if(recognition) recognition.stop();
                     return;
                 }
-
                 startRecording(btn, lang, type);
             };
         }
@@ -220,18 +204,25 @@
         function startRecording(btn, lang, type) {
             if(!SpeechRecognition) return;
 
+            // 強制重置：如果之前有任何殘留的 recognition，先殺掉
+            if(recognition) {
+                try { recognition.abort(); } catch(e){}
+            }
+
             playBeep();
             btnLock = true;
             setTimeout(() => btnLock = false, 300);
 
             recognition = new SpeechRecognition();
-            recognition.lang = lang;
+            recognition.lang = lang; // 關鍵：ja-JP
             recognition.interimResults = true; 
             recognition.continuous = false; 
 
+            // 建立暫存氣泡
             let tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = `msg ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
-            tempMsgDiv.innerHTML = `<span class="interim">...</span>`; 
+            // 預設顯示狀態
+            tempMsgDiv.innerHTML = `<div class="debug-status">等待聲音...</div>`; 
             document.getElementById('screen').appendChild(tempMsgDiv);
             document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
 
@@ -239,13 +230,24 @@
                 isRecording = true;
                 currentBtn = btn;
                 btn.classList.add('recording');
-                document.getElementById('statusText').innerText = "🎤 聆聽中...";
+                document.getElementById('statusText').innerText = lang === 'ja-JP' ? "🇯🇵 請說日文..." : "🇹🇼 請說中文...";
                 document.getElementById('statusText').style.color = "#0a84ff";
             };
 
+            // 🔥 診斷功能：聲音偵測 🔥
+            recognition.onsoundstart = () => {
+                // 如果這行沒跑，代表麥克風壞了
+                tempMsgDiv.innerHTML = `<div class="debug-status">🔊 偵測到聲音...</div>`;
+            };
+
+            recognition.onspeechstart = () => {
+                // 如果這行有跑，但沒出字，代表語言包沒裝
+                tempMsgDiv.innerHTML = `<div class="debug-status">🗣️ 偵測到語音，辨識中...</div>`;
+            };
+
             recognition.onresult = (event) => {
-                let interimTranscript = '';
                 let finalTranscript = '';
+                let interimTranscript = '';
 
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
@@ -254,7 +256,9 @@
                         interimTranscript += event.results[i][0].transcript;
                     }
                 }
-                if (interimTranscript) tempMsgDiv.innerHTML = `<span class="interim">${interimTranscript}</span>`;
+                
+                // 只要有字出來，就顯示字
+                if (interimTranscript) tempMsgDiv.innerHTML = `<span style="color:gray">${interimTranscript}</span>`;
                 if (finalTranscript) {
                     tempMsgDiv.innerHTML = finalTranscript;
                     processText(finalTranscript, type, tempMsgDiv);
@@ -262,9 +266,18 @@
             };
 
             recognition.onend = () => { stopRecording(); };
+            
             recognition.onerror = (e) => {
                 stopRecording();
-                if (tempMsgDiv.innerText === '...') tempMsgDiv.remove();
+                // 顯示錯誤原因
+                if(e.error === 'no-speech') {
+                    tempMsgDiv.innerHTML = `<div class="debug-status">⚠️ 沒聽到聲音，請靠近麥克風</div>`;
+                } else if(e.error === 'network') {
+                    tempMsgDiv.innerHTML = `<div class="debug-status">❌ 網路不穩</div>`;
+                } else {
+                    // 如果沒字且出錯，就移除氣泡
+                     if(!tempMsgDiv.innerText.includes('偵測到')) tempMsgDiv.remove();
+                }
             };
 
             try { recognition.start(); } catch(e) { btnLock = false; }
@@ -278,12 +291,11 @@
             document.getElementById('statusText').style.color = "#888";
         }
 
-        // --- 翻譯與顯示 ---
+        // --- 翻譯與朗讀 ---
         async function processText(text, type, msgDiv) {
             if(!text.trim()) return;
             
-            // 加上翻譯區塊
-            msgDiv.innerHTML += `<div class="translation">... <span class="speaker-icon">🔊</span></div>`;
+            msgDiv.innerHTML += `<div class="translation">...</div>`;
             const transEl = msgDiv.querySelector('.translation');
             document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
             
@@ -295,38 +307,18 @@
                 const result = await model.generateContent(`Translate to ${target}: "${text}"`);
                 const transText = result.response.text();
                 
-                // 更新文字
-                transEl.innerHTML = `${transText} <span class="speaker-icon">🔊</span>`;
-                
-                // 🔥 自動朗讀
+                transEl.innerHTML = `${transText} <span style="font-size:16px">🔊</span>`;
                 speak(transText, speakLang);
+                
+                msgDiv.onclick = () => speak(transText, speakLang);
 
-                // 🔥 綁定點擊重播功能
-                msgDiv.onclick = () => {
-                    speak(transText, speakLang);
-                    // 點擊回饋特效
-                    msgDiv.style.opacity = '0.5';
-                    setTimeout(() => msgDiv.style.opacity = '1', 100);
-                };
-
-            } catch(e) {
-                transEl.innerText = "翻譯失敗";
-            }
+            } catch(e) { transEl.innerText = "翻譯失敗"; }
         }
 
-        // --- 朗讀功能 (增強版) ---
         function speak(text, lang) {
-            // 1. 先取消正在播放的
             window.speechSynthesis.cancel();
-            
             const u = new SpeechSynthesisUtterance(text);
             u.lang = lang;
-            u.rate = 1.0;  // 語速正常
-            u.volume = 1.0; // 音量最大
-            
-            // 2. 針對 iOS 的特殊處理 (有時候需要強制指定語音)
-            // 雖然通常設 lang 就夠了，但為了保險我們不做過多 voice 指定以免報錯
-            
             window.speechSynthesis.speak(u);
         }
 
