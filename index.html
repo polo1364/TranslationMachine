@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iOS 強制相容口譯機</title>
+    <title>AI 隨身口譯機</title>
     <script type="importmap">
       {
         "imports": {
@@ -14,13 +14,15 @@
     <style>
         :root {
             --bg-color: #000000;
+            --card-bg: #1c1c1e;
             --btn-blue: #0a84ff;
             --btn-red: #ff453a;
             --text: #ffffff;
+            --gray: #8e8e93;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: var(--bg-color);
             margin: 0; padding: 0;
             display: flex; flex-direction: column; height: 100vh;
@@ -30,79 +32,104 @@
             -webkit-user-select: none; user-select: none;
         }
 
-        /* 狀態列 */
+        /* 頂部狀態列 */
         .status-bar {
-            padding: 12px; text-align: center; background: #1c1c1e;
-            font-size: 15px; font-weight: bold; color: #888;
-            border-bottom: 1px solid #333; min-height: 20px;
+            padding: 15px; text-align: center; background: var(--bg-color);
+            font-size: 15px; font-weight: 600; color: var(--gray);
+            border-bottom: 0.5px solid #333;
+            min-height: 20px;
+            transition: color 0.3s;
         }
 
-        /* 螢幕 */
+        /* 螢幕對話區 */
         .screen {
             flex: 1; padding: 20px; overflow-y: auto;
-            display: flex; flex-direction: column; gap: 15px;
+            display: flex; flex-direction: column; gap: 20px;
             -webkit-overflow-scrolling: touch;
         }
 
+        /* 歡迎文字 */
+        .welcome-text {
+            text-align: center; color: #444; margin-top: auto; padding-bottom: 30px;
+            font-size: 14px; letter-spacing: 1px;
+        }
+
+        /* 對話氣泡 */
         .msg {
-            padding: 12px 16px; border-radius: 16px; max-width: 85%;
-            font-size: 20px; line-height: 1.4; animation: pop 0.2s;
+            padding: 14px 18px; border-radius: 20px; max-width: 85%;
+            font-size: 20px; line-height: 1.4; animation: pop 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
             position: relative; cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
         
-        @keyframes pop { from{transform:scale(0.95);opacity:0.5;} to{transform:scale(1);opacity:1;} }
+        @keyframes pop { from{transform:scale(0.9);opacity:0;} to{transform:scale(1);opacity:1;} }
 
-        .msg-me { align-self: flex-end; background: var(--btn-blue); color: #fff; }
-        .msg-other { align-self: flex-start; background: #333; color: #fff; }
+        .msg-me { align-self: flex-end; background: var(--btn-blue); color: #fff; border-bottom-right-radius: 4px; }
+        .msg-other { align-self: flex-start; background: #2c2c2e; color: #fff; border-bottom-left-radius: 4px; }
 
+        /* 翻譯結果 */
         .translation {
             font-size: 22px; font-weight: 700; margin-top: 8px;
-            color: #ffd700; border-top: 1px solid rgba(255,255,255,0.2);
-            padding-top: 6px;
+            color: #ffd60a; /* 亮黃色 */
+            border-top: 1px solid rgba(255,255,255,0.15);
+            padding-top: 8px;
+            display: flex; justify-content: space-between; align-items: center;
         }
+        
+        .speaker-icon { font-size: 16px; opacity: 0.7; }
 
-        /* 按鈕區 */
+        /* 按鈕控制區 */
         .controls {
-            height: 240px; background: #1c1c1e;
-            display: flex; justify-content: space-around; align-items: center;
-            padding-bottom: 40px; border-top: 1px solid #333;
+            height: 260px; background: var(--card-bg);
+            display: flex; justify-content: space-evenly; align-items: center;
+            padding-bottom: 40px; border-top-left-radius: 24px; border-top-right-radius: 24px;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.5);
         }
 
         .tap-btn {
-            width: 120px; height: 120px; border-radius: 50%;
-            border: 3px solid #444; background: #2c2c2e;
-            color: white; font-size: 20px; font-weight: bold;
+            width: 110px; height: 110px; border-radius: 50%;
+            background: #3a3a3c;
+            color: white; font-size: 22px; font-weight: 700;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
-            transition: all 0.1s; cursor: pointer; -webkit-tap-highlight-color: transparent;
+            transition: all 0.2s; cursor: pointer; -webkit-tap-highlight-color: transparent;
+            position: relative;
         }
-        .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: normal; }
+        
+        /* 按鈕外圈裝飾 */
+        .tap-btn::after {
+            content: ''; position: absolute; top: -6px; left: -6px; right: -6px; bottom: -6px;
+            border-radius: 50%; border: 3px solid #3a3a3c; opacity: 0.5;
+        }
 
-        .tap-btn.recording {
-            border-color: #fff; transform: scale(1.1);
-            box-shadow: 0 0 25px rgba(255,255,255,0.3);
-        }
-        .btn-tw.recording { background: var(--btn-blue); }
-        .btn-jp.recording { background: var(--btn-red); }
+        .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: 400; }
+
+        /* 錄音中特效 */
+        .tap-btn.recording { transform: scale(1.1); }
+        .btn-tw.recording { background: var(--btn-blue); box-shadow: 0 0 30px rgba(10, 132, 255, 0.4); }
+        .btn-tw.recording::after { border-color: var(--btn-blue); }
+        
+        .btn-jp.recording { background: var(--btn-red); box-shadow: 0 0 30px rgba(255, 69, 58, 0.4); }
+        .btn-jp.recording::after { border-color: var(--btn-red); }
 
         /* Modal */
         .modal {
             position: fixed; top:0; left:0; width:100%; height:100%;
             background: rgba(0,0,0,0.85); z-index: 999; display: flex;
-            justify-content: center; align-items: center;
+            justify-content: center; align-items: center; backdrop-filter: blur(5px);
         }
-        .modal-box { background: #2c2c2e; padding: 25px; border-radius: 16px; width: 80%; text-align: center; border: 1px solid #444; }
-        input { width: 90%; padding: 12px; margin: 15px 0; font-size: 16px; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; }
-        button { padding: 12px 24px; font-size: 16px; background: var(--btn-blue); color: white; border: none; border-radius: 8px; font-weight: bold; }
+        .modal-box { background: #2c2c2e; padding: 30px; border-radius: 20px; width: 80%; max-width: 320px; text-align: center; border: 1px solid #444; }
+        input { width: 100%; padding: 14px; margin: 20px 0; font-size: 16px; background: #1c1c1e; color: #fff; border: 1px solid #444; border-radius: 12px; box-sizing: border-box; text-align: center;}
+        button { padding: 14px 0; width: 100%; font-size: 16px; background: var(--btn-blue); color: white; border: none; border-radius: 12px; font-weight: bold; }
 
     </style>
 </head>
 <body>
 
-    <div class="status-bar" id="statusText">iOS 相容模式</div>
+    <div class="status-bar" id="statusText">Ready</div>
 
     <div class="screen" id="screen">
-        <div style="text-align:center; color:#555; margin-top:auto; padding-bottom:20px;">
-            如果日文仍無反應，請嘗試重開 Safari
+        <div class="welcome-text">
+            點擊按鈕開始說話
         </div>
     </div>
 
@@ -119,9 +146,10 @@
 
     <div id="keyModal" class="modal">
         <div class="modal-box">
-            <h3 style="color:#fff; margin:0;">🔑 輸入 API Key</h3>
+            <h3 style="color:#fff; margin:0; font-size: 20px;">啟動口譯機</h3>
+            <p style="color:#888; font-size:13px; margin-top:8px;">請輸入 Gemini API Key</p>
             <input type="password" id="apiKey" placeholder="貼上 API Key">
-            <button onclick="saveKey()">確定</button>
+            <button onclick="saveKey()">開始使用</button>
         </div>
     </div>
 
@@ -133,18 +161,19 @@
         let isRecording = false;
         let btnLock = false;
         let currentBtn = null;
+        let audioCtx = null; 
 
         // --- 初始化 API ---
         window.saveKey = () => {
             const key = document.getElementById('apiKey').value.trim();
             if(key) {
-                localStorage.setItem('gemini_mobile_key_v2', key);
+                localStorage.setItem('gemini_mobile_key_v3', key);
                 initAI(key);
                 document.getElementById('keyModal').style.display = 'none';
             }
         };
 
-        const savedKey = localStorage.getItem('gemini_mobile_key_v2');
+        const savedKey = localStorage.getItem('gemini_mobile_key_v3');
         if(savedKey) {
             document.getElementById('apiKey').value = savedKey;
             initAI(savedKey);
@@ -156,9 +185,30 @@
                 genAI = new GoogleGenerativeAI(key);
                 model = genAI.getGenerativeModel({ 
                     model: "gemini-2.5-flash",
-                    systemInstruction: "你是一個雙向口譯機。將輸入翻譯成目標語言。規則：直接輸出翻譯結果。"
+                    systemInstruction: "你是一個專業口譯員。將輸入翻譯成目標語言。規則：直接輸出翻譯結果，不解釋，風格自然口語。"
                 });
-            } catch(e) { alert("Key Error"); }
+            } catch(e) { updateStatus("API Key Error"); }
+        }
+
+        function updateStatus(text, color = "#8e8e93") {
+            const el = document.getElementById('statusText');
+            el.innerText = text;
+            el.style.color = color;
+        }
+
+        // --- 發出提示音 (Beep) ---
+        function playBeep() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
+            gain.gain.setValueAtTime(0.05, audioCtx.currentTime); // 音量小一點比較優雅
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.1); 
         }
 
         // --- 核心語音邏輯 ---
@@ -169,8 +219,11 @@
             btn.onclick = (e) => {
                 e.preventDefault();
                 if(btnLock) return;
-                
+
+                // 喚醒 iOS TTS 引擎
                 window.speechSynthesis.cancel(); 
+                const empty = new SpeechSynthesisUtterance('');
+                window.speechSynthesis.speak(empty);
 
                 if (isRecording) {
                     if(recognition) recognition.stop();
@@ -185,36 +238,32 @@
 
             if(recognition) { try { recognition.abort(); } catch(e){} }
 
+            playBeep(); // 提示音
             btnLock = true;
             setTimeout(() => btnLock = false, 300);
 
             recognition = new SpeechRecognition();
-            
-            // 🔥 iOS 強制相容設定 🔥
-            if (lang === 'ja-JP') {
-                recognition.lang = 'ja'; // 嘗試用簡碼
-                recognition.interimResults = false; // ❌ 關閉即時字幕 (iOS 日文救星)
-                recognition.maxAlternatives = 1;
-            } else {
-                recognition.lang = lang;
-                recognition.interimResults = true; // 中文通常可以開
-            }
-            
+            recognition.lang = lang; 
+            recognition.interimResults = true; 
             recognition.continuous = false; 
 
-            // 建立暫存氣泡
+            // 建立氣泡 (只顯示 "..." 優雅一點)
             let tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = `msg ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
-            tempMsgDiv.innerHTML = `<span style="font-style:italic; opacity:0.7;">${lang.includes('ja') ? '🇯🇵 聆聽中 (日文)...' : '🇹🇼 聆聽中...'}</span>`; 
-            document.getElementById('screen').appendChild(tempMsgDiv);
-            document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
+            tempMsgDiv.innerHTML = `<span style="opacity:0.6;">...</span>`; 
+            const screen = document.getElementById('screen');
+            screen.appendChild(tempMsgDiv);
+            screen.scrollTop = screen.scrollHeight;
+            
+            // 移除歡迎文字
+            const welcome = document.querySelector('.welcome-text');
+            if(welcome) welcome.style.display = 'none';
 
             recognition.onstart = () => {
                 isRecording = true;
                 currentBtn = btn;
                 btn.classList.add('recording');
-                document.getElementById('statusText').innerText = "🎤 錄音中...";
-                document.getElementById('statusText').style.color = "#0a84ff";
+                updateStatus(lang === 'ja-JP' ? "Listening (JP)..." : "Listening (TW)...", "#0a84ff");
             };
 
             recognition.onresult = (event) => {
@@ -229,8 +278,8 @@
                     }
                 }
                 
-                // 更新 UI
-                if (interimTranscript) tempMsgDiv.innerHTML = `<span style="color:gray">${interimTranscript}</span>`;
+                // 顯示邏輯：如果有字就顯示字，沒字顯示 "..."
+                if (interimTranscript) tempMsgDiv.innerHTML = `<span style="opacity:0.7">${interimTranscript}</span>`;
                 if (finalTranscript) {
                     tempMsgDiv.innerHTML = finalTranscript;
                     processText(finalTranscript, type, tempMsgDiv);
@@ -241,15 +290,16 @@
             
             recognition.onerror = (e) => {
                 stopRecording();
-                // 忽略常見無害錯誤
+                // 靜默處理錯誤：如果是取消或沒聲音，直接移除氣泡，不報錯
                 if(e.error === 'aborted' || e.error === 'no-speech') {
-                    if(tempMsgDiv.innerText.includes("聆聽中")) tempMsgDiv.remove();
+                    if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
                     return;
                 }
+                // 如果是權限錯誤，才顯示
+                if(e.error === 'not-allowed') updateStatus("請允許麥克風權限", "#ff453a");
+                else updateStatus("請再試一次", "#ff453a");
                 
-                // 🔥 彈出錯誤代碼，讓我們知道 iPhone 到底在抱怨什麼
-                alert("iPhone 報錯: " + e.error);
-                tempMsgDiv.innerHTML = `<span style="color:#ff6b6b;">❌ ${e.error}</span>`;
+                if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
             };
 
             try { recognition.start(); } catch(e) { btnLock = false; }
@@ -259,15 +309,17 @@
             isRecording = false;
             if(currentBtn) currentBtn.classList.remove('recording');
             currentBtn = null;
-            document.getElementById('statusText').innerText = "就緒";
-            document.getElementById('statusText').style.color = "#888";
+            updateStatus("Ready");
         }
 
         // --- 翻譯與朗讀 ---
         async function processText(text, type, msgDiv) {
             if(!text.trim()) return;
             
-            msgDiv.innerHTML += `<div class="translation">...</div>`;
+            updateStatus("Translating...", "#ffd60a");
+            
+            // 預先加入翻譯區塊
+            msgDiv.innerHTML += `<div class="translation"><span style="font-size:16px">Thinking...</span></div>`;
             const transEl = msgDiv.querySelector('.translation');
             document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
             
@@ -279,12 +331,25 @@
                 const result = await model.generateContent(`Translate to ${target}: "${text}"`);
                 const transText = result.response.text();
                 
-                transEl.innerHTML = `${transText} <span style="font-size:16px">🔊</span>`;
+                // 更新翻譯結果
+                transEl.innerHTML = `${transText} <span class="speaker-icon">🔊</span>`;
+                updateStatus("Done");
+                
+                // 自動朗讀
                 speak(transText, speakLang);
                 
-                msgDiv.onclick = () => speak(transText, speakLang);
+                // 點擊重播
+                msgDiv.onclick = () => {
+                    speak(transText, speakLang);
+                    // 輕微回饋動畫
+                    msgDiv.style.transform = "scale(0.98)";
+                    setTimeout(() => msgDiv.style.transform = "scale(1)", 100);
+                };
 
-            } catch(e) { transEl.innerText = "翻譯失敗"; }
+            } catch(e) { 
+                transEl.innerText = "Error";
+                updateStatus("Error");
+            }
         }
 
         function speak(text, lang) {
