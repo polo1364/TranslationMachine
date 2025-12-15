@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 隨身口譯機 (修復版)</title>
+    <title>AI 隨身口譯機 (流式版)</title>
     <script type="importmap">
       {
         "imports": {
@@ -32,7 +32,7 @@
             -webkit-user-select: none; user-select: none;
         }
 
-        /* 頂部導航 (修復：加入設定按鈕) */
+        /* 頂部導航 */
         .navbar {
             padding: 10px 15px; background: var(--bg-color);
             display: flex; justify-content: space-between; align-items: center;
@@ -53,15 +53,20 @@
             -webkit-overflow-scrolling: touch;
         }
 
+        .welcome-text {
+            text-align: center; color: #444; margin-top: auto; padding-bottom: 30px;
+            font-size: 14px; letter-spacing: 1px;
+        }
+
         .msg {
             padding: 14px 18px; border-radius: 20px; max-width: 85%;
-            font-size: 20px; line-height: 1.4; animation: pop 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            font-size: 20px; line-height: 1.4; 
             position: relative; cursor: pointer;
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            /* 讓打字時不會一直閃爍 */
+            min-height: 24px;
         }
         
-        @keyframes pop { from{transform:scale(0.9);opacity:0;} to{transform:scale(1);opacity:1;} }
-
         .msg-me { align-self: flex-end; background: var(--btn-blue); color: #fff; border-bottom-right-radius: 4px; }
         .msg-other { align-self: flex-start; background: #2c2c2e; color: #fff; border-bottom-left-radius: 4px; }
 
@@ -70,7 +75,20 @@
             color: #ffd60a; 
             border-top: 1px solid rgba(255,255,255,0.15);
             padding-top: 8px;
+            white-space: pre-wrap; /* 保留換行 */
         }
+
+        /* 打字游標特效 */
+        .typing::after {
+            content: '▋';
+            display: inline-block;
+            vertical-align: bottom;
+            animation: blink 1s infinite;
+            color: #ffd60a;
+            font-size: 18px;
+            margin-left: 2px;
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
         /* 按鈕控制區 */
         .controls {
@@ -108,7 +126,7 @@
             position: fixed; top:0; left:0; width:100%; height:100%;
             background: rgba(0,0,0,0.85); z-index: 999; display: flex;
             justify-content: center; align-items: center; backdrop-filter: blur(5px);
-            display: none; /* 預設隱藏 */
+            display: none;
         }
         .modal-box { background: #2c2c2e; padding: 30px; border-radius: 20px; width: 80%; max-width: 320px; text-align: center; border: 1px solid #444; }
         input { width: 100%; padding: 14px; margin: 20px 0; font-size: 16px; background: #1c1c1e; color: #fff; border: 1px solid #444; border-radius: 12px; box-sizing: border-box; text-align: center;}
@@ -119,13 +137,14 @@
 <body>
 
     <div class="navbar">
-        <div style="width: 30px;"></div> <div class="status-text" id="statusText">Ready</div>
+        <div style="width: 30px;"></div>
+        <div class="status-text" id="statusText">Ready</div>
         <button class="btn-gear" onclick="openModal()">⚙️</button>
     </div>
 
     <div class="screen" id="screen">
-        <div style="text-align:center; color:#444; margin-top:auto; padding-bottom:30px; font-size:14px;">
-            如果無法使用，請點右上角 ⚙️ 重設 Key
+        <div class="welcome-text">
+            點擊按鈕開始說話
         </div>
     </div>
 
@@ -160,9 +179,7 @@
         let audioCtx = null; 
 
         // --- 初始化 & Key 管理 ---
-        window.openModal = () => {
-            document.getElementById('keyModal').style.display = 'flex';
-        };
+        window.openModal = () => { document.getElementById('keyModal').style.display = 'flex'; };
 
         window.saveKey = () => {
             const key = document.getElementById('apiKey').value.trim();
@@ -173,13 +190,12 @@
             }
         };
 
-        // 自動載入 Key
         const savedKey = localStorage.getItem('gemini_mobile_key_v3');
         if(savedKey) {
             document.getElementById('apiKey').value = savedKey;
             initAI(savedKey);
         } else {
-            openModal(); // 沒 Key 就彈窗
+            openModal();
         }
 
         function initAI(key) {
@@ -187,12 +203,12 @@
                 genAI = new GoogleGenerativeAI(key);
                 model = genAI.getGenerativeModel({ 
                     model: "gemini-2.5-flash",
-                    systemInstruction: "你是一個專業口譯員。將輸入翻譯成目標語言。規則：直接輸出翻譯結果。"
+                    systemInstruction: "你是一個專業口譯員。將輸入翻譯成目標語言。規則：直接輸出翻譯結果，不解釋，風格自然口語。"
                 });
                 updateStatus("Ready");
             } catch(e) { 
                 updateStatus("Key Error", "#ff453a");
-                openModal(); // Key 錯了就彈窗
+                openModal();
             }
         }
 
@@ -225,12 +241,9 @@
             btn.onclick = (e) => {
                 e.preventDefault();
                 if(btnLock) return;
-
-                // 喚醒 TTS
                 window.speechSynthesis.cancel(); 
                 const empty = new SpeechSynthesisUtterance('');
                 window.speechSynthesis.speak(empty);
-
                 if (isRecording) {
                     if(recognition) recognition.stop();
                     return;
@@ -241,25 +254,20 @@
 
         function startRecording(btn, lang, type) {
             if(!SpeechRecognition) return;
-
             if(recognition) { try { recognition.abort(); } catch(e){} }
-
             playBeep();
             btnLock = true;
             setTimeout(() => btnLock = false, 300);
 
             recognition = new SpeechRecognition();
-            
-            // iOS 日文相容設定
             if (lang === 'ja-JP') {
                 recognition.lang = 'ja'; 
-                recognition.interimResults = false; 
+                recognition.interimResults = false; // iOS 日文必須 false
                 recognition.maxAlternatives = 1;
             } else {
                 recognition.lang = lang;
                 recognition.interimResults = true;
             }
-            
             recognition.continuous = false; 
 
             // 建立氣泡
@@ -269,6 +277,9 @@
             const screen = document.getElementById('screen');
             screen.appendChild(tempMsgDiv);
             screen.scrollTop = screen.scrollHeight;
+            
+            const welcome = document.querySelector('.welcome-text');
+            if(welcome) welcome.style.display = 'none';
 
             recognition.onstart = () => {
                 isRecording = true;
@@ -280,15 +291,10 @@
             recognition.onresult = (event) => {
                 let finalTranscript = '';
                 let interimTranscript = '';
-
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                    }
+                    if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
+                    else interimTranscript += event.results[i][0].transcript;
                 }
-                
                 if (interimTranscript) tempMsgDiv.innerHTML = `<span style="opacity:0.7">${interimTranscript}</span>`;
                 if (finalTranscript) {
                     tempMsgDiv.innerHTML = finalTranscript;
@@ -297,22 +303,16 @@
             };
 
             recognition.onend = () => { stopRecording(); };
-            
             recognition.onerror = (e) => {
                 stopRecording();
                 if(e.error === 'aborted' || e.error === 'no-speech') {
                     if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
                     return;
                 }
-                // 錯誤處理
-                if(e.error === 'not-allowed') {
-                    updateStatus("無麥克風權限", "#ff453a");
-                } else {
-                    updateStatus("重試中...", "#ff453a");
-                }
+                if(e.error === 'not-allowed') updateStatus("無麥克風權限", "#ff453a");
+                else updateStatus("請再試一次", "#ff453a");
                 if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
             };
-
             try { recognition.start(); } catch(e) { btnLock = false; }
         }
 
@@ -323,39 +323,58 @@
             updateStatus("Ready");
         }
 
-        // --- 翻譯與朗讀 ---
+        // --- 翻譯與朗讀 (修改為流式輸出) ---
         async function processText(text, type, msgDiv) {
             if(!text.trim()) return;
             
             updateStatus("Translating...", "#ffd60a");
             
-            msgDiv.innerHTML += `<div class="translation"><span style="font-size:16px">...</span></div>`;
+            // 加入翻譯區塊，並加上 "typing" class 來顯示游標
+            msgDiv.innerHTML += `<div class="translation typing"></div>`;
             const transEl = msgDiv.querySelector('.translation');
-            document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
+            const screen = document.getElementById('screen');
+            screen.scrollTop = screen.scrollHeight;
             
             const target = type === 'tw' ? 'Japanese' : 'Traditional Chinese';
             const speakLang = type === 'tw' ? 'ja-JP' : 'zh-TW';
             
             try {
                 if(!model) throw new Error("API Key unset");
-                const result = await model.generateContent(`Translate to ${target}: "${text}"`);
-                const transText = result.response.text();
                 
-                transEl.innerHTML = `${transText} <span style="font-size:16px; opacity:0.7;">🔊</span>`;
+                // 🔥 改為 generateContentStream (流式傳輸)
+                const result = await model.generateContentStream(`Translate to ${target}: "${text}"`);
+                
+                let fullText = "";
+                
+                for await (const chunk of result.stream) {
+                    const chunkText = chunk.text();
+                    fullText += chunkText;
+                    // 即時更新文字
+                    transEl.innerText = fullText;
+                    screen.scrollTop = screen.scrollHeight;
+                }
+                
+                // 移除游標動畫，並加上喇叭圖示
+                transEl.classList.remove('typing');
+                transEl.innerHTML = `${fullText} <span class="speaker-icon">🔊</span>`;
+                
                 updateStatus("Done");
                 
-                speak(transText, speakLang);
+                // 自動朗讀
+                speak(fullText, speakLang);
                 
+                // 點擊重播
                 msgDiv.onclick = () => {
-                    speak(transText, speakLang);
+                    speak(fullText, speakLang);
                     msgDiv.style.opacity = '0.7';
                     setTimeout(() => msgDiv.style.opacity = '1', 100);
                 };
 
             } catch(e) { 
                 transEl.innerText = "Error";
+                transEl.classList.remove('typing');
                 updateStatus("Check Key", "#ff453a");
-                openModal(); // 如果 API 報錯，自動彈出設定窗
+                openModal();
             }
         }
 
