@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>日文修復版口譯機</title>
+    <title>iOS 穩定口譯機</title>
     <script type="importmap">
       {
         "imports": {
@@ -37,6 +37,12 @@
             border-bottom: 1px solid #333; min-height: 20px;
         }
 
+        /* 錯誤訊息條 (紅色) */
+        .error-bar {
+            background: #4a0000; color: #ffcccc; padding: 8px; text-align: center;
+            font-size: 13px; display: none; width: 100%;
+        }
+
         /* 螢幕 */
         .screen {
             flex: 1; padding: 20px; overflow-y: auto;
@@ -60,9 +66,6 @@
             color: #ffd700; border-top: 1px solid rgba(255,255,255,0.2);
             padding-top: 6px;
         }
-        
-        /* 偵測狀態顯示 */
-        .debug-status { font-size: 12px; color: #aaa; margin-top: 5px; font-style: italic; }
 
         /* 按鈕區 */
         .controls {
@@ -80,6 +83,7 @@
         }
         .tap-btn span.sub { font-size: 13px; color: #aaa; margin-top: 4px; font-weight: normal; }
 
+        /* 錄音中特效 */
         .tap-btn.recording {
             border-color: #fff; transform: scale(1.1);
             box-shadow: 0 0 25px rgba(255,255,255,0.3);
@@ -101,11 +105,13 @@
 </head>
 <body>
 
-    <div class="status-bar" id="statusText">請點擊按鈕</div>
+    <div class="status-bar" id="statusText">就緒 (iOS優化版)</div>
+    <div class="error-bar" id="errorBar"></div>
 
     <div class="screen" id="screen">
         <div style="text-align:center; color:#555; margin-top:auto; padding-bottom:20px;">
-            如果日文沒反應，請檢查手機鍵盤設定
+            請確認 iPhone「鍵盤聽寫」已開啟<br>
+            並勾選「日文」與「中文」
         </div>
     </div>
 
@@ -136,7 +142,7 @@
         let isRecording = false;
         let btnLock = false;
         let currentBtn = null;
-        let audioCtx = null; 
+        let silenceTimer = null; // 防卡死計時器
 
         // --- 初始化 API ---
         window.saveKey = () => {
@@ -165,18 +171,11 @@
             } catch(e) { alert("Key Error"); }
         }
 
-        function playBeep() {
-            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
-            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-            oscillator.start();
-            oscillator.stop(audioCtx.currentTime + 0.1); 
+        function showError(msg) {
+            const bar = document.getElementById('errorBar');
+            bar.innerText = msg;
+            bar.style.display = 'block';
+            setTimeout(() => bar.style.display = 'none', 3000);
         }
 
         // --- 核心語音邏輯 ---
@@ -188,10 +187,8 @@
                 e.preventDefault();
                 if(btnLock) return;
 
-                // 點擊瞬間喚醒 TTS
+                // 喚醒語音引擎
                 window.speechSynthesis.cancel(); 
-                const empty = new SpeechSynthesisUtterance('');
-                window.speechSynthesis.speak(empty);
 
                 if (isRecording) {
                     if(recognition) recognition.stop();
@@ -202,27 +199,25 @@
         }
 
         function startRecording(btn, lang, type) {
-            if(!SpeechRecognition) return;
-
-            // 強制重置：如果之前有任何殘留的 recognition，先殺掉
-            if(recognition) {
-                try { recognition.abort(); } catch(e){}
+            if(!SpeechRecognition) {
+                alert("此瀏覽器不支援語音辨識");
+                return;
             }
 
-            playBeep();
+            if(recognition) { try { recognition.abort(); } catch(e){} }
+
             btnLock = true;
             setTimeout(() => btnLock = false, 300);
 
             recognition = new SpeechRecognition();
-            recognition.lang = lang; // 關鍵：ja-JP
+            recognition.lang = lang;
             recognition.interimResults = true; 
             recognition.continuous = false; 
 
             // 建立暫存氣泡
             let tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = `msg ${type === 'tw' ? 'msg-me' : 'msg-other'}`;
-            // 預設顯示狀態
-            tempMsgDiv.innerHTML = `<div class="debug-status">等待聲音...</div>`; 
+            tempMsgDiv.innerHTML = `<span style="font-style:italic; opacity:0.7;">等待聲音...</span>`; 
             document.getElementById('screen').appendChild(tempMsgDiv);
             document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
 
@@ -232,20 +227,22 @@
                 btn.classList.add('recording');
                 document.getElementById('statusText').innerText = lang === 'ja-JP' ? "🇯🇵 請說日文..." : "🇹🇼 請說中文...";
                 document.getElementById('statusText').style.color = "#0a84ff";
-            };
 
-            // 🔥 診斷功能：聲音偵測 🔥
-            recognition.onsoundstart = () => {
-                // 如果這行沒跑，代表麥克風壞了
-                tempMsgDiv.innerHTML = `<div class="debug-status">🔊 偵測到聲音...</div>`;
-            };
-
-            recognition.onspeechstart = () => {
-                // 如果這行有跑，但沒出字，代表語言包沒裝
-                tempMsgDiv.innerHTML = `<div class="debug-status">🗣️ 偵測到語音，辨識中...</div>`;
+                // 🔥 啟動防卡死計時器：如果 8 秒內沒結果，就報錯
+                clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                    if(isRecording) {
+                        recognition.stop();
+                        if(tempMsgDiv.innerText.includes("等待聲音")) {
+                            tempMsgDiv.innerHTML = `<span style="color:#ff6b6b; font-size:14px;">❌ 沒收到聲音<br>請檢查 iPhone 設定 > 一般 > 鍵盤 > 啟用聽寫</span>`;
+                        }
+                    }
+                }, 8000);
             };
 
             recognition.onresult = (event) => {
+                clearTimeout(silenceTimer); // 有收到字，取消計時器
+
                 let finalTranscript = '';
                 let interimTranscript = '';
 
@@ -257,7 +254,6 @@
                     }
                 }
                 
-                // 只要有字出來，就顯示字
                 if (interimTranscript) tempMsgDiv.innerHTML = `<span style="color:gray">${interimTranscript}</span>`;
                 if (finalTranscript) {
                     tempMsgDiv.innerHTML = finalTranscript;
@@ -269,15 +265,20 @@
             
             recognition.onerror = (e) => {
                 stopRecording();
-                // 顯示錯誤原因
-                if(e.error === 'no-speech') {
-                    tempMsgDiv.innerHTML = `<div class="debug-status">⚠️ 沒聽到聲音，請靠近麥克風</div>`;
-                } else if(e.error === 'network') {
-                    tempMsgDiv.innerHTML = `<div class="debug-status">❌ 網路不穩</div>`;
-                } else {
-                    // 如果沒字且出錯，就移除氣泡
-                     if(!tempMsgDiv.innerText.includes('偵測到')) tempMsgDiv.remove();
+                clearTimeout(silenceTimer);
+
+                // 忽略 aborted 和 no-speech，這些通常是誤觸或沒講話
+                if(e.error === 'aborted' || e.error === 'no-speech') {
+                    if(tempMsgDiv.innerText.includes("等待聲音")) tempMsgDiv.remove();
+                    return;
                 }
+
+                // 其他錯誤才顯示
+                let msg = e.error;
+                if(msg === 'not-allowed') msg = "麥克風權限被拒絕";
+                if(msg === 'network') msg = "網路連線錯誤";
+                
+                tempMsgDiv.innerHTML = `<span style="color:#ff6b6b; font-size:14px;">❌ 錯誤: ${msg}</span>`;
             };
 
             try { recognition.start(); } catch(e) { btnLock = false; }
@@ -285,6 +286,7 @@
 
         function stopRecording() {
             isRecording = false;
+            clearTimeout(silenceTimer);
             if(currentBtn) currentBtn.classList.remove('recording');
             currentBtn = null;
             document.getElementById('statusText').innerText = "就緒";
