@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 雙語口譯機 (美化版)</title>
+    <title>AI 雙語口譯機 (打字修復版)</title>
     <script type="importmap">
       {
         "imports": {
@@ -46,64 +46,38 @@
         .status-text { font-size: 14px; font-weight: 600; color: var(--text-sub); }
         .btn-gear { background: none; border: none; font-size: 20px; padding: 8px; cursor: pointer; opacity: 0.8; }
 
-        /* --- 螢幕對話區 (修正重疊問題) --- */
+        /* --- 螢幕對話區 --- */
         .screen {
-            flex: 1; 
-            padding: 20px 16px; 
-            overflow-y: auto; 
-            display: flex; 
-            flex-direction: column; 
-            gap: 20px; /* 增加氣泡間距 */
+            flex: 1; padding: 20px 16px; overflow-y: auto; 
+            display: flex; flex-direction: column; gap: 20px;
             -webkit-overflow-scrolling: touch;
         }
 
-        /* 歡迎文字 */
         .welcome-text {
             text-align: center; color: #555; margin-top: auto; padding-bottom: 20px;
             font-size: 13px; letter-spacing: 0.5px;
         }
 
-        /* --- 對話氣泡樣式 (縮小字體，增加呼吸感) --- */
+        /* --- 對話氣泡 --- */
         .msg {
-            max-width: 85%;
-            padding: 12px 16px;
-            border-radius: 18px;
-            font-size: 17px; /* iOS 標準字體大小 */
-            line-height: 1.4;
-            position: relative;
-            word-wrap: break-word;
+            max-width: 85%; padding: 12px 16px; border-radius: 18px;
+            font-size: 17px; line-height: 1.5; /* 增加行距讓日文更好讀 */
+            position: relative; word-wrap: break-word;
             box-shadow: 0 1px 2px rgba(0,0,0,0.3);
-            flex-shrink: 0; /* ❌ 禁止氣泡被壓縮，解決重疊的關鍵 */
+            flex-shrink: 0;
+            min-height: 24px;
         }
         
-        /* 動畫 */
-        .msg { animation: slideIn 0.3s cubic-bezier(0.25, 1, 0.5, 1); }
-        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        .msg-me { 
-            align-self: flex-end; 
-            background: var(--bubble-me); 
-            color: white; 
-            border-bottom-right-radius: 4px; 
-        }
-        
-        .msg-other { 
-            align-self: flex-start; 
-            background: var(--bubble-other); 
-            color: white; 
-            border-bottom-left-radius: 4px; 
-        }
+        .msg-me { align-self: flex-end; background: var(--bubble-me); color: white; border-bottom-right-radius: 4px; }
+        .msg-other { align-self: flex-start; background: var(--bubble-other); color: white; border-bottom-left-radius: 4px; }
 
         /* 翻譯文字區 */
         .translation {
-            display: block;
-            margin-top: 8px;
-            padding-top: 8px;
+            display: block; margin-top: 8px; padding-top: 8px;
             border-top: 1px solid rgba(255, 255, 255, 0.2);
-            font-size: 18px; /* 翻譯字體稍微大一點 */
-            font-weight: 600;
-            color: #ffcc00; /* 金黃色，對比度高 */
-            min-height: 20px;
+            font-size: 19px; /* 日文翻譯字大一點 */
+            font-weight: 600; color: #ffcc00;
+            min-height: 20px; white-space: pre-wrap;
         }
 
         /* 打字游標 */
@@ -123,57 +97,31 @@
             z-index: 200;
         }
 
-        /* 膠囊切換器 (Segmented Control) */
+        /* 膠囊切換器 */
         .lang-switch-container {
-            background: #2c2c2e;
-            padding: 3px;
-            border-radius: 30px;
-            display: flex;
-            margin-bottom: 25px;
-            position: relative;
+            background: #2c2c2e; padding: 3px; border-radius: 30px;
+            display: flex; margin-bottom: 25px;
         }
 
         .lang-option {
-            padding: 8px 24px;
-            border-radius: 25px;
-            font-size: 14px;
-            font-weight: 600;
-            color: #8e8e93;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            z-index: 2;
+            padding: 8px 24px; border-radius: 25px; font-size: 14px; font-weight: 600;
+            color: #8e8e93; cursor: pointer; transition: all 0.3s ease;
         }
-
-        .lang-option.active {
-            color: #fff;
-            background: #636366;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-        
-        /* 特殊顏色激活 */
+        .lang-option.active { color: #fff; background: #636366; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
         .lang-option[data-lang="ja"].active { background: var(--btn-red); }
         .lang-option[data-lang="en"].active { background: var(--btn-purple); }
 
         /* 按鈕容器 */
-        .btn-row {
-            display: flex;
-            justify-content: space-evenly;
-            width: 100%;
-            align-items: center;
-        }
+        .btn-row { display: flex; justify-content: space-evenly; width: 100%; align-items: center; }
 
         /* 圓形按鈕 */
         .mic-btn {
-            width: 90px; height: 90px;
-            border-radius: 50%;
-            background: #3a3a3c;
+            width: 90px; height: 90px; border-radius: 50%; background: #3a3a3c;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
-            color: white;
-            font-size: 20px; font-weight: 700;
+            color: white; font-size: 20px; font-weight: 700;
             box-shadow: 0 4px 15px rgba(0,0,0,0.3);
             transition: transform 0.1s, background 0.3s;
-            position: relative;
-            border: 3px solid #3a3a3c;
+            position: relative; border: 3px solid #3a3a3c;
         }
 
         .mic-btn:active { transform: scale(0.95); }
@@ -181,7 +129,6 @@
 
         /* 錄音中樣式 */
         .mic-btn.recording { transform: scale(1.1); border-color: #fff; }
-        
         .btn-tw.recording { background: var(--btn-blue); box-shadow: 0 0 30px rgba(0, 122, 255, 0.5); }
         .btn-other.jp-mode.recording { background: var(--btn-red); box-shadow: 0 0 30px rgba(255, 59, 48, 0.5); }
         .btn-other.en-mode.recording { background: var(--btn-purple); box-shadow: 0 0 30px rgba(175, 82, 222, 0.5); }
@@ -196,7 +143,6 @@
             background: #2c2c2e; padding: 24px; border-radius: 20px; width: 85%; max-width: 320px;
             text-align: center; border: 1px solid #444; box-shadow: 0 20px 40px rgba(0,0,0,0.6);
         }
-        .modal-title { color: #fff; margin: 0 0 10px 0; font-size: 18px; }
         .modal-input {
             width: 100%; padding: 12px; margin: 15px 0; background: #1c1c1e;
             border: 1px solid #48484a; border-radius: 10px; color: #fff; font-size: 14px;
@@ -243,8 +189,7 @@
 
     <div id="keyModal" class="modal">
         <div class="modal-card">
-            <h3 class="modal-title">設定 API Key</h3>
-            <p style="color:#888; font-size:13px;">請輸入 Gemini API Key</p>
+            <h3 style="color:#fff; margin:0 0 10px 0; font-size:18px;">設定 API Key</h3>
             <input type="password" id="apiKey" class="modal-input" placeholder="貼上 Key...">
             <button class="modal-btn" onclick="saveKey()">儲存</button>
         </div>
@@ -305,7 +250,6 @@
         // --- 切換語言 ---
         window.switchLang = (lang) => {
             targetLangMode = lang;
-            
             document.querySelectorAll('.lang-option').forEach(btn => btn.classList.remove('active'));
             document.querySelector(`.lang-option[data-lang="${lang}"]`).classList.add('active');
             
@@ -382,7 +326,7 @@
 
             recognition = new SpeechRecognition();
             
-            // iOS Fix
+            // iOS Fix: 日文關閉即時預覽
             if (lang === 'ja-JP') {
                 recognition.lang = 'ja'; 
                 recognition.interimResults = false; 
@@ -400,11 +344,7 @@
             
             const screen = document.getElementById('screen');
             screen.appendChild(tempMsgDiv);
-            
-            // 🔥 自動捲動 + 預留空間
-            requestAnimationFrame(() => {
-                screen.scrollTop = screen.scrollHeight;
-            });
+            requestAnimationFrame(() => screen.scrollTop = screen.scrollHeight);
 
             const welcome = document.querySelector('.welcome-text');
             if(welcome) welcome.style.display = 'none';
@@ -434,7 +374,7 @@
                     tempMsgDiv.innerHTML = finalTranscript;
                     processText(finalTranscript, role, tempMsgDiv);
                 }
-                screen.scrollTop = screen.scrollHeight; // 持續捲動
+                screen.scrollTop = screen.scrollHeight;
             };
 
             recognition.onend = () => { stopRecording(); };
@@ -444,8 +384,7 @@
                     if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
                     return;
                 }
-                if(e.error === 'not-allowed') updateStatus("無麥克風權限", "#ff3b30");
-                else updateStatus("請再試一次", "#ff3b30");
+                updateStatus("請再試一次", "#ff3b30");
                 if(tempMsgDiv.innerText === '...') tempMsgDiv.remove();
             };
             try { recognition.start(); } catch(e) { btnLock = false; }
@@ -458,7 +397,7 @@
             updateStatus("Ready");
         }
 
-        // --- 翻譯 & 打字特效 ---
+        // --- 翻譯 & 打字特效 (修復版) ---
         async function processText(text, role, msgDiv) {
             if(!text.trim()) return;
             
@@ -484,22 +423,27 @@
                 const result = await model.generateContentStream(`Translate to ${targetLangName}: "${text}"`);
                 
                 let fullTextBuffer = "";
-                let displayedText = "";
-                let streamFinished = false;
+                let charIndex = 0; // 🔥 改用獨立計數器，不依賴字串長度
 
-                // 打字機速度：80ms
+                // 🔥 視覺打字機 (Visual Typer) 🔥
                 const typeInterval = setInterval(() => {
-                    if (displayedText.length < fullTextBuffer.length) {
-                        const chars = Array.from(fullTextBuffer);
-                        displayedText += chars[displayedText.length];
-                        transEl.innerText = displayedText;
-                        screen.scrollTop = screen.scrollHeight; // 確保打字時一直捲動
-                    } else if (streamFinished && displayedText.length >= fullTextBuffer.length) {
+                    // 使用 Array.from 確保日文/Emoji 被正確拆分
+                    const chars = Array.from(fullTextBuffer);
+                    
+                    if (charIndex < chars.length) {
+                        // 每次只抓一個字
+                        transEl.innerText += chars[charIndex];
+                        charIndex++;
+                        screen.scrollTop = screen.scrollHeight;
+                    } 
+                    // 結束條件
+                    else if (streamFinished && charIndex >= chars.length) {
                         clearInterval(typeInterval);
                         finalizeTranslation(transEl, fullTextBuffer, speakLangCode, msgDiv);
                     }
-                }, 80); 
+                }, 80); // 80ms 速度，日文看起來會很舒服
 
+                let streamFinished = false;
                 for await (const chunk of result.stream) {
                     fullTextBuffer += chunk.text();
                 }
