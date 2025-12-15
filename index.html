@@ -355,6 +355,69 @@
                 updateStatus(label, "#007aff");
             };
 
+            // 即時翻譯相關變數
+            let transEl = null;
+            let lastTranslatedText = '';
+            let translateDebounceTimer = null;
+            let currentTranslateController = null;
+            let isFinalReceived = false;
+            let speakLangCode = '';
+            
+            // 預先建立翻譯區塊
+            function ensureTranslationElement() {
+                if (!transEl) {
+                    const transDiv = document.createElement('div');
+                    transDiv.className = 'translation typing';
+                    tempMsgDiv.appendChild(transDiv);
+                    transEl = transDiv;
+                }
+                return transEl;
+            }
+            
+            // 即時翻譯函數
+            async function translateRealtime(text, isFinal = false) {
+                if (!text.trim() || text === lastTranslatedText) return;
+                lastTranslatedText = text;
+                
+                // 取消進行中的翻譯
+                if (currentTranslateController) {
+                    currentTranslateController.abort();
+                }
+                currentTranslateController = new AbortController();
+                
+                let targetLangName;
+                if (role === 'tw') {
+                    if (targetLangMode === 'ja') { targetLangName = 'Japanese'; speakLangCode = 'ja-JP'; } 
+                    else { targetLangName = 'English'; speakLangCode = 'en-US'; }
+                } else {
+                    targetLangName = 'Traditional Chinese'; speakLangCode = 'zh-TW';
+                }
+                
+                try {
+                    if (!model) return;
+                    updateStatus("即時翻譯中...", "#ffcc00");
+                    
+                    const el = ensureTranslationElement();
+                    const result = await model.generateContentStream(`Translate to ${targetLangName}: "${text}"`);
+                    
+                    let translatedText = '';
+                    for await (const chunk of result.stream) {
+                        translatedText += chunk.text();
+                        el.innerText = translatedText;
+                        screen.scrollTop = screen.scrollHeight;
+                    }
+                    
+                    // 如果是最終結果，完成翻譯
+                    if (isFinal && isFinalReceived) {
+                        finalizeTranslation(el, translatedText, speakLangCode, tempMsgDiv);
+                    }
+                } catch(e) {
+                    if (e.name !== 'AbortError') {
+                        console.error('Translation error:', e);
+                    }
+                }
+            }
+
             recognition.onresult = (event) => {
                 let finalTranscript = '';
                 let interimTranscript = '';
@@ -363,15 +426,53 @@
                     else interimTranscript += event.results[i][0].transcript;
                 }
                 
-                if (interimTranscript) tempMsgDiv.innerHTML = `<span style="opacity:0.7">${interimTranscript}</span>`;
-                if (finalTranscript) {
-                    tempMsgDiv.innerHTML = finalTranscript;
-                    processText(finalTranscript, role, tempMsgDiv);
+                const currentText = finalTranscript || interimTranscript;
+                
+                // 更新顯示的原文
+                if (interimTranscript && !finalTranscript) {
+                    // 確保翻譯區塊已存在
+                    const el = ensureTranslationElement();
+                    tempMsgDiv.firstChild.textContent = interimTranscript;
+                    if (tempMsgDiv.firstChild.tagName !== 'SPAN') {
+                        const span = document.createElement('span');
+                        span.style.opacity = '0.7';
+                        span.textContent = interimTranscript;
+                        tempMsgDiv.insertBefore(span, tempMsgDiv.firstChild);
+                        if (tempMsgDiv.childNodes[1] && tempMsgDiv.childNodes[1].nodeType === 3) {
+                            tempMsgDiv.childNodes[1].remove();
+                        }
+                    }
                 }
+                
+                if (finalTranscript) {
+                    isFinalReceived = true;
+                    // 清除之前的內容，設定最終原文
+                    const el = ensureTranslationElement();
+                    while (tempMsgDiv.firstChild !== el) {
+                        tempMsgDiv.removeChild(tempMsgDiv.firstChild);
+                    }
+                    tempMsgDiv.insertBefore(document.createTextNode(finalTranscript), el);
+                }
+                
                 screen.scrollTop = screen.scrollHeight;
+                
+                // 即時翻譯 (使用 debounce 避免過於頻繁)
+                clearTimeout(translateDebounceTimer);
+                if (finalTranscript) {
+                    // 最終結果立即翻譯
+                    translateRealtime(finalTranscript, true);
+                } else if (interimTranscript && interimTranscript.length > 2) {
+                    // 暫時結果延遲 300ms 翻譯
+                    translateDebounceTimer = setTimeout(() => {
+                        translateRealtime(interimTranscript, false);
+                    }, 300);
+                }
             };
 
-            recognition.onend = () => { stopRecording(); };
+            recognition.onend = () => { 
+                stopRecording(); 
+                clearTimeout(translateDebounceTimer);
+            };
             recognition.onerror = (e) => {
                 stopRecording();
                 if(e.error === 'aborted' || e.error === 'no-speech') {
@@ -391,64 +492,7 @@
             updateStatus("Ready");
         }
 
-        // --- 翻譯 & 打字特效 (修復版) ---
-        async function processText(text, role, msgDiv) {
-            if(!text.trim()) return;
-            
-            updateStatus("Translating...", "#ffcc00");
-            
-            // 插入翻譯區塊
-            msgDiv.innerHTML += `<div class="translation typing"></div>`;
-            const transEl = msgDiv.querySelector('.translation');
-            const screen = document.getElementById('screen');
-            screen.scrollTop = screen.scrollHeight;
-            
-            let targetLangName, speakLangCode;
-            if (role === 'tw') {
-                if (targetLangMode === 'ja') { targetLangName = 'Japanese'; speakLangCode = 'ja-JP'; } 
-                else { targetLangName = 'English'; speakLangCode = 'en-US'; }
-            } else {
-                targetLangName = 'Traditional Chinese'; speakLangCode = 'zh-TW';
-            }
-            
-            try {
-                if(!model) throw new Error("Key Error");
-                
-                const result = await model.generateContentStream(`Translate to ${targetLangName}: "${text}"`);
-                
-                let fullTextBuffer = "";
-                let charIndex = 0; // 🔥 改用獨立計數器，不依賴字串長度
-
-                // 🔥 視覺打字機 (Visual Typer) 🔥
-                const typeInterval = setInterval(() => {
-                    // 使用 Array.from 確保日文/Emoji 被正確拆分
-                    const chars = Array.from(fullTextBuffer);
-                    
-                    if (charIndex < chars.length) {
-                        // 每次只抓一個字
-                        transEl.innerText += chars[charIndex];
-                        charIndex++;
-                        screen.scrollTop = screen.scrollHeight;
-                    } 
-                    // 結束條件
-                    else if (streamFinished && charIndex >= chars.length) {
-                        clearInterval(typeInterval);
-                        finalizeTranslation(transEl, fullTextBuffer, speakLangCode, msgDiv);
-                    }
-                }, 80); // 80ms 速度，日文看起來會很舒服
-
-                let streamFinished = false;
-                for await (const chunk of result.stream) {
-                    fullTextBuffer += chunk.text();
-                }
-                streamFinished = true;
-
-            } catch(e) { 
-                transEl.innerText = "Error"; 
-                transEl.classList.remove('typing');
-                updateStatus("Check Key", "#ff3b30");
-            }
-        }
+        // --- 即時翻譯模式 (已整合到 startRecording 中) ---
 
         function finalizeTranslation(el, text, lang, container) {
             el.classList.remove('typing');
