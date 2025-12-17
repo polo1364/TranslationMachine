@@ -67,6 +67,7 @@
             flex-shrink: 0;
             min-height: 24px;
         }
+        .msg.clickable { cursor: pointer; }
         
         .msg-me { align-self: flex-end; background: var(--bubble-me); color: white; border-bottom-right-radius: 4px; }
         .msg-other { align-self: flex-start; background: var(--bubble-other); color: white; border-bottom-left-radius: 4px; }
@@ -78,6 +79,17 @@
             font-size: 19px; /* 日文翻譯字大一點 */
             font-weight: 600; color: #ffcc00;
             min-height: 20px; white-space: pre-wrap;
+        }
+        .translation-source {
+            display: block;
+            margin-top: 8px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: #2f2f33;
+            color: #d0d0d0;
+            font-size: 15px;
+            line-height: 1.5;
+            white-space: pre-wrap;
         }
 
         /* 打字游標 */
@@ -110,6 +122,17 @@
         .lang-option.active { color: #fff; background: #636366; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
         .lang-option[data-lang="ja"].active { background: var(--btn-red); }
         .lang-option[data-lang="en"].active { background: var(--btn-purple); }
+
+        /* 模式切換 */
+        .mode-switch {
+            display: flex; gap: 8px; margin: 0 16px 16px;
+        }
+        .mode-option {
+            flex: 1; text-align: center; padding: 10px 12px; border-radius: 14px;
+            background: #2c2c2e; color: #8e8e93; font-weight: 600; cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .mode-option.active { color: #fff; background: #3a3a3c; box-shadow: 0 4px 16px rgba(0,0,0,0.35); }
 
         /* 按鈕容器 */
         .btn-row { display: flex; justify-content: space-evenly; width: 100%; align-items: center; }
@@ -188,6 +211,102 @@
             font-weight: 600;
         }
 
+        /* 文字翻譯面板 */
+        .text-panel {
+            width: calc(100% - 32px);
+            background: #1c1c1e;
+            border: 1px solid #2f2f31;
+            border-radius: 16px;
+            padding: 14px;
+            box-sizing: border-box;
+            display: none;
+            gap: 10px;
+            flex-direction: column;
+        }
+        .text-panel.active { display: flex; }
+        .text-input {
+            width: 100%;
+            min-height: 90px;
+            background: #0f0f11;
+            border: 1px solid #2f2f31;
+            border-radius: 12px;
+            padding: 10px;
+            color: #fff;
+            font-size: 15px;
+            box-sizing: border-box;
+        }
+        .text-actions {
+            display: flex;
+            gap: 10px;
+        }
+        .text-btn {
+            flex: 1;
+            padding: 12px;
+            background: var(--btn-blue);
+            border: none;
+            border-radius: 12px;
+            color: #fff;
+            font-weight: 700;
+            font-size: 15px;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        .text-btn.secondary { background: #3a3a3c; color: #ddd; }
+        .text-btn:active { transform: scale(0.97); }
+        .text-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #8e8e93;
+            font-size: 13px;
+        }
+        .text-select {
+            background: #0f0f11;
+            color: #fff;
+            border: 1px solid #2f2f31;
+            border-radius: 10px;
+            padding: 8px 10px;
+        }
+
+        /* 圖片翻譯面板 */
+        .image-panel {
+            width: calc(100% - 32px);
+            background: #1c1c1e;
+            border: 1px solid #2f2f31;
+            border-radius: 16px;
+            padding: 14px;
+            box-sizing: border-box;
+            display: none;
+            gap: 10px;
+            flex-direction: column;
+        }
+        .image-panel.active { display: flex; }
+        .image-actions { display: flex; gap: 10px; }
+        .image-btn {
+            flex: 1;
+            padding: 12px;
+            background: #3a3a3c;
+            border: 1px solid #4a4a4c;
+            border-radius: 12px;
+            color: #fff;
+            font-weight: 700;
+            font-size: 15px;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        .image-btn.primary { background: var(--btn-blue); border-color: var(--btn-blue); }
+        .image-btn:active { transform: scale(0.97); }
+        .image-hint { color: #8e8e93; font-size: 13px; }
+        .img-preview {
+            width: 120px;
+            max-height: 140px;
+            border-radius: 10px;
+            object-fit: cover;
+            display: block;
+            margin-bottom: 8px;
+        }
+        .hidden { display: none !important; }
+
     </style>
 </head>
 <body>
@@ -205,6 +324,11 @@
     </div>
 
     <div class="controls">
+        <div class="mode-switch">
+            <div class="mode-option active" data-mode="voice" onclick="switchMode('voice')">🎙 語音模式</div>
+            <div class="mode-option" data-mode="text" onclick="switchMode('text')">⌨️ 文字模式</div>
+            <div class="mode-option" data-mode="image" onclick="switchMode('image')">🖼️ 圖片模式</div>
+        </div>
         <!-- 音量指示器 -->
         <div class="volume-meter" id="volumeMeter">
             <span class="volume-meter-label">🎤</span>
@@ -226,6 +350,40 @@
         <div class="lang-switch-container">
             <div class="lang-option active" data-lang="ja" onclick="switchLang('ja')">🇯🇵 日文</div>
             <div class="lang-option" data-lang="en" onclick="switchLang('en')">🇺🇸 英文</div>
+        </div>
+
+        <div class="text-panel" id="textPanel">
+            <div class="text-meta">
+                <span>輸入文字翻譯</span>
+                <select id="textTarget" class="text-select">
+                    <option value="zh">繁中</option>
+                    <option value="ja">日文</option>
+                    <option value="en">英文</option>
+                </select>
+            </div>
+            <textarea id="textInput" class="text-input" placeholder="在此輸入要翻譯的內容..."></textarea>
+            <div class="text-actions">
+                <button class="text-btn" onclick="handleTextTranslate()">翻譯</button>
+                <button class="text-btn secondary" onclick="clearTextInput()">清除</button>
+            </div>
+        </div>
+
+        <div class="image-panel" id="imagePanel">
+            <div class="text-meta">
+                <span>圖片翻譯</span>
+                <select id="imageTarget" class="text-select">
+                    <option value="zh">繁中</option>
+                    <option value="ja">日文</option>
+                    <option value="en">英文</option>
+                </select>
+            </div>
+            <div class="image-actions">
+                <button class="image-btn primary" onclick="triggerImageUpload()">上傳圖片</button>
+                <button class="image-btn" onclick="triggerImageCapture()">拍照 / 相機</button>
+            </div>
+            <div class="image-hint">支援上傳或相機拍攝，翻譯圖片中的文字並顯示於對話區。</div>
+            <input id="imageFileInput" type="file" accept="image/*" class="hidden" />
+            <input id="imageCaptureInput" type="file" accept="image/*" capture="environment" class="hidden" />
         </div>
 
         <div class="btn-row">
@@ -259,6 +417,7 @@
         let audioCtx = null; 
         
         let targetLangMode = 'ja';
+        let currentMode = 'voice';
 
         // --- 音量監測 ---
         let volumeAudioCtx = null;
@@ -431,6 +590,363 @@
 
         const btnTW = document.getElementById('btnTW');
         const btnOther = document.getElementById('btnOther');
+        const btnRow = document.querySelector('.btn-row');
+        const volumeMeterEl = document.getElementById('volumeMeter');
+        const textPanel = document.getElementById('textPanel');
+        const textInput = document.getElementById('textInput');
+        const textTarget = document.getElementById('textTarget');
+        const screen = document.getElementById('screen');
+        const welcomeEl = document.querySelector('.welcome-text');
+        const imagePanel = document.getElementById('imagePanel');
+        const imageTarget = document.getElementById('imageTarget');
+        const imageFileInput = document.getElementById('imageFileInput');
+        const imageCaptureInput = document.getElementById('imageCaptureInput');
+
+        window.switchMode = (mode) => {
+            if (currentMode === mode) return;
+            currentMode = mode;
+
+            document.querySelectorAll('.mode-option').forEach(el => {
+                el.classList.toggle('active', el.dataset.mode === mode);
+            });
+
+            if (mode === 'voice') {
+                textPanel.classList.remove('active');
+                imagePanel.classList.remove('active');
+                btnRow.classList.remove('hidden');
+                volumeMeterEl.classList.remove('hidden');
+                updateStatus("Ready");
+            } else if (mode === 'text') {
+                if (isRecording && recognition) recognition.stop();
+                stopVolumeMeter();
+                btnRow.classList.add('hidden');
+                volumeMeterEl.classList.add('hidden');
+                textPanel.classList.add('active');
+                updateStatus("文字翻譯模式");
+                imagePanel.classList.remove('active');
+            } else {
+                if (isRecording && recognition) recognition.stop();
+                stopVolumeMeter();
+                btnRow.classList.add('hidden');
+                volumeMeterEl.classList.add('hidden');
+                textPanel.classList.remove('active');
+                imagePanel.classList.add('active');
+                updateStatus("圖片翻譯模式");
+            }
+        };
+
+        window.handleTextTranslate = async () => {
+            const text = textInput.value.trim();
+            if (!text) {
+                updateStatus("請先輸入內容", "#ffcc00");
+                return;
+            }
+            if (!model) {
+                openModal();
+                return;
+            }
+
+            const target = textTarget.value;
+            let langName = 'Traditional Chinese';
+            let speakCode = 'zh-TW';
+            if (target === 'ja') { langName = 'Japanese'; speakCode = 'ja-JP'; }
+            else if (target === 'en') { langName = 'English'; speakCode = 'en-US'; }
+
+            updateStatus("翻譯中...", "#ffcc00");
+
+            const bubbleInfo = appendTextBubble(text, "翻譯中...", speakCode);
+            if (!bubbleInfo) return;
+
+            try {
+                const stream = await model.generateContentStream(`Translate to ${langName}: "${text}"`);
+                let translated = '';
+                for await (const chunk of stream.stream) {
+                    translated += chunk.text();
+                    bubbleInfo.transEl.textContent = translated || '...';
+                    screen.scrollTop = screen.scrollHeight;
+                }
+                translated = (translated || '').trim();
+                if (translated) {
+                    bubbleInfo.transEl.textContent = translated;
+                    bubbleInfo.bubble.onclick = () => {
+                        speak(translated, speakCode);
+                        bubbleInfo.bubble.style.opacity = '0.6';
+                        setTimeout(() => bubbleInfo.bubble.style.opacity = '1', 120);
+                    };
+                    updateStatus("文字翻譯完成", "#8e8e93");
+                } else {
+                    bubbleInfo.transEl.textContent = '無法取得結果';
+                    updateStatus("無法取得結果", "#ff3b30");
+                }
+            } catch (e) {
+                console.error('Text translate error:', e);
+                bubbleInfo.transEl.textContent = '翻譯失敗';
+                updateStatus("翻譯失敗", "#ff3b30");
+            }
+        };
+
+        window.clearTextInput = () => {
+            textInput.value = '';
+            updateStatus("文字翻譯模式");
+        };
+
+        window.triggerImageUpload = () => imageFileInput.click();
+        window.triggerImageCapture = () => imageCaptureInput.click();
+
+        imageFileInput.addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (file) handleImageTranslate(file);
+            imageFileInput.value = '';
+        });
+        imageCaptureInput.addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (file) handleImageTranslate(file);
+            imageCaptureInput.value = '';
+        });
+
+        async function handleImageTranslate(file) {
+            if (!model) {
+                openModal();
+                return;
+            }
+            const target = imageTarget.value;
+            let langName = 'Traditional Chinese';
+            let speakCode = 'zh-TW';
+            if (target === 'ja') { langName = 'Japanese'; speakCode = 'ja-JP'; }
+            else if (target === 'en') { langName = 'English'; speakCode = 'en-US'; }
+
+            const objectUrl = URL.createObjectURL(file);
+            const pending = appendImageBubble(objectUrl, '翻譯中...', speakCode, true);
+            updateStatus("圖片翻譯中...", "#ffcc00");
+
+            const reader = new FileReader();
+            reader.onload = async () => {
+                try {
+                    let dataUrl = reader.result;
+                    let mimeType = file.type || 'image/jpeg';
+
+                    // 只在檔案較大時才壓縮，以加速處理
+                    if (file.size > 1.5 * 1024 * 1024) {
+                        try {
+                            const compressed = await compressDataUrl(dataUrl, 960, 0.7);
+                            dataUrl = compressed.dataUrl;
+                            mimeType = compressed.mimeType || mimeType;
+                        } catch (ce) {
+                            console.warn('compress fallback', ce);
+                        }
+                    }
+
+                    const base64 = dataUrl.split(',')[1];
+                    const prompt = `You are an OCR translator. Extract all text and translate to ${langName}. Preserve the original layout order: process by top-to-bottom, then left-to-right. Keep line breaks exactly; separate distinct blocks with a blank line. Output only the translated lines (with blank lines between blocks), no numbering, no extra words.`;
+                    const res = await model.generateContent([
+                        { text: prompt },
+                        { inlineData: { data: base64, mimeType } }
+                    ]);
+                    const translated = (res.response.text() || '').trim();
+
+                    if (translated) {
+                        pending.transEl.textContent = translated;
+                        pending.transEl.style.display = 'block';
+                        pending.bubble.onclick = null;
+                        pending.imgEl.onclick = null;
+                        updateStatus("圖片翻譯完成", "#8e8e93");
+                    } else {
+                        pending.transEl.textContent = '無法取得結果';
+                        updateStatus("無法取得結果", "#ff3b30");
+                    }
+                } catch (err) {
+                    console.error('Image translate error:', err);
+                    pending.transEl.textContent = '翻譯失敗';
+                    updateStatus("翻譯失敗", "#ff3b30");
+                } finally {
+                    URL.revokeObjectURL(objectUrl);
+                }
+            };
+            reader.onerror = () => {
+                pending.transEl.textContent = '讀取圖片失敗';
+                updateStatus("讀取圖片失敗", "#ff3b30");
+                URL.revokeObjectURL(objectUrl);
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function drawTranslatedOnImage(dataUrl, translatedText) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+
+                    const padding = Math.max(12, img.width * 0.02);
+                    const fontSize = Math.max(18, Math.round(img.width * 0.024));
+                    const lineHeight = fontSize * 1.32;
+                    const blockGap = lineHeight * 0.6;
+                    ctx.font = `${fontSize}px "SF Pro Text", Arial, sans-serif`;
+                    ctx.textBaseline = 'top';
+                    ctx.textAlign = 'left';
+
+                    // 以空行分塊，約略保持由上而下的區段位置
+                    const blocks = translatedText
+                        .split(/\n\s*\n/)
+                        .map(b => b.split('\n').map(l => l.trim()).filter(Boolean))
+                        .filter(b => b.length);
+
+                    const maxBlockWidth = canvas.width * 0.85;
+                    const maxTextWidth = maxBlockWidth - padding * 2;
+
+                    // 預先計算每個區塊高度與寬度
+                    const blockInfo = blocks.map(lines => {
+                        const wrapped = wrapBlock(ctx, lines, maxTextWidth);
+                        const maxLineWidth = wrapped.reduce((m, l) => Math.max(m, ctx.measureText(l).width), 0);
+                        const boxWidth = Math.min(maxBlockWidth, maxLineWidth + padding * 2);
+                        const boxHeight = wrapped.length * lineHeight + padding * 0.8;
+                        return { wrapped, boxWidth, boxHeight };
+                    });
+
+                    const areaHeight = canvas.height - padding * 2;
+                    const sumHeights = blockInfo.reduce((s, b) => s + b.boxHeight, 0);
+                    let gap = blockGap;
+                    if (blockInfo.length > 1) {
+                        const ideal = (areaHeight - sumHeights) / (blockInfo.length - 1);
+                        gap = Math.max(lineHeight * 0.4, Math.min(blockGap, ideal));
+                    }
+                    const totalHeight = sumHeights + gap * Math.max(0, blockInfo.length - 1);
+                    let startY = padding + Math.max(0, (areaHeight - totalHeight) / 2);
+
+                    blockInfo.forEach((info) => {
+                        const boxX = (canvas.width - info.boxWidth) / 2;
+                        const boxY = Math.min(startY, canvas.height - info.boxHeight - padding);
+
+                        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                        ctx.roundRect(boxX, boxY, info.boxWidth, info.boxHeight, 10);
+                        ctx.fill();
+
+                        ctx.fillStyle = '#fff';
+                        let ty = boxY + padding * 0.4;
+                        info.wrapped.forEach(line => {
+                            ctx.fillText(line, boxX + padding * 0.7, ty);
+                            ty += lineHeight;
+                        });
+
+                        startY = boxY + info.boxHeight + gap;
+                    });
+
+                    resolve(canvas.toDataURL('image/png'));
+                };
+                img.onerror = reject;
+                img.src = dataUrl;
+            });
+        }
+
+        function wrapBlock(ctx, lines, maxWidth) {
+            const out = [];
+            lines.forEach(line => {
+                if (!line) return;
+                const words = line.split(' ');
+                let current = '';
+                words.forEach(word => {
+                    const test = current ? `${current} ${word}` : word;
+                    if (ctx.measureText(test).width > maxWidth && current) {
+                        out.push(current);
+                        current = word;
+                    } else {
+                        current = test;
+                    }
+                });
+                if (current) out.push(current);
+            });
+            return out;
+        }
+
+        function compressDataUrl(dataUrl, maxSize = 1280, quality = 0.82) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let { width, height } = img;
+                    if (width <= maxSize && height <= maxSize) {
+                        // 不需縮放
+                        return resolve({ dataUrl, mimeType: 'image/jpeg' });
+                    }
+                    if (width > height && width > maxSize) {
+                        height = Math.round(height * (maxSize / width));
+                        width = maxSize;
+                    } else if (height >= width && height > maxSize) {
+                        width = Math.round(width * (maxSize / height));
+                        height = maxSize;
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    const mime = 'image/jpeg';
+                    const compressed = canvas.toDataURL(mime, quality);
+                    resolve({ dataUrl: compressed, mimeType: mime });
+                };
+                img.onerror = reject;
+                img.src = dataUrl;
+            });
+        }
+
+        function appendTextBubble(originalText, translatedText, speakCode) {
+            if (welcomeEl) welcomeEl.style.display = 'none';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'msg msg-me';
+
+            const originalEl = document.createElement('span');
+            originalEl.className = 'original-text';
+            originalEl.textContent = originalText;
+
+            const transEl = document.createElement('div');
+            transEl.className = 'translation';
+            transEl.textContent = translatedText;
+
+            const icon = document.createElement('span');
+            icon.style.fontSize = '16px';
+            icon.style.marginLeft = '5px';
+            icon.textContent = '🔊';
+            transEl.appendChild(icon);
+
+            bubble.appendChild(originalEl);
+            bubble.appendChild(transEl);
+
+            bubble.onclick = () => {
+                speak(translatedText, speakCode);
+                bubble.style.opacity = '0.6';
+                setTimeout(() => bubble.style.opacity = '1', 120);
+            };
+
+            screen.appendChild(bubble);
+            requestAnimationFrame(() => screen.scrollTop = screen.scrollHeight);
+            return { bubble, transEl };
+        }
+
+        function appendImageBubble(imgSrc, translatedText, speakCode, isPending = false) {
+            if (welcomeEl) welcomeEl.style.display = 'none';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'msg msg-me clickable';
+
+            const img = document.createElement('img');
+            img.className = 'img-preview';
+            img.src = imgSrc;
+            img.style.cursor = 'pointer';
+
+            const transEl = document.createElement('div');
+            transEl.className = 'translation';
+            transEl.textContent = translatedText;
+
+            bubble.appendChild(img);
+            bubble.appendChild(transEl);
+
+            screen.appendChild(bubble);
+            requestAnimationFrame(() => screen.scrollTop = screen.scrollHeight);
+            return { bubble, transEl, imgEl: img };
+        }
 
         btnTW.onclick = (e) => handleBtnClick(e, btnTW, 'tw');
         btnOther.onclick = (e) => handleBtnClick(e, btnOther, 'other');
@@ -637,12 +1153,12 @@
                 // 即時翻譯 (使用 debounce 避免過於頻繁)
                 clearTimeout(translateDebounceTimer);
                 
-                if (fullText && fullText.length > 3) {
-                    // 延遲 600ms 翻譯，讓文字累積更完整
-                    translateDebounceTimer = setTimeout(() => {
-                        translateRealtime(fullText, false);
-                    }, 600);
-                }
+                    if (fullText && fullText.length > 3) {
+                        // 縮短 debounce，加快翻譯觸發
+                        translateDebounceTimer = setTimeout(() => {
+                            translateRealtime(fullText, false);
+                        }, 300);
+                    }
             };
 
             recognition.onend = () => { 
@@ -685,10 +1201,27 @@
 
         // --- 即時翻譯模式 (已整合到 startRecording 中) ---
 
+        let speaking = false;
         function speak(text, lang) {
-            window.speechSynthesis.cancel();
+            // 若正在朗讀，再次點擊直接停止
+            if (window.speechSynthesis.speaking) {
+                window.speechSynthesis.cancel();
+                speaking = false;
+                updateStatus("朗讀已停止", "#8e8e93");
+                return;
+            }
             const u = new SpeechSynthesisUtterance(text);
             u.lang = lang;
+            speaking = true;
+            updateStatus("朗讀中...", "#ffcc00");
+            u.onend = () => {
+                speaking = false;
+                updateStatus("Ready");
+            };
+            u.onerror = () => {
+                speaking = false;
+                updateStatus("朗讀失敗", "#ff3b30");
+            };
             window.speechSynthesis.speak(u);
         }
     </script>
