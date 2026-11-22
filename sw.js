@@ -1,6 +1,7 @@
 // 譯機 service worker
 // 改版時請調整 VERSION，舊快取會在 activate 時清掉。
-const VERSION = 'v3';
+const VERSION = 'v4';
+const FLAGS_CACHE = 'tm-flags';   // 頁面寫給 service worker 看的設定旗標，改版時不清除
 const SHELL_CACHE = `tm-shell-${VERSION}`;
 const CDN_CACHE = `tm-cdn-${VERSION}`;
 const SHELL = [
@@ -27,7 +28,7 @@ self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys()
             .then((keys) => Promise.all(
-                keys.filter((k) => k.startsWith('tm-') && k !== SHELL_CACHE && k !== CDN_CACHE).map((k) => caches.delete(k))
+                keys.filter((k) => k.startsWith('tm-') && k !== SHELL_CACHE && k !== CDN_CACHE && k !== FLAGS_CACHE).map((k) => caches.delete(k))
             ))
             .then(() => self.clients.claim())
     );
@@ -39,12 +40,24 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(request.url);
 
     if (url.origin === self.location.origin) {
-        event.respondWith(networkFirst(request).then(isolate));
+        event.respondWith(Promise.all([networkFirst(request), wantsIsolation()])
+            .then(([response, wanted]) => (wanted ? isolate(response) : response)));
     } else if (CDN_HOSTS.has(url.hostname)) {
         event.respondWith(cacheFirst(request));
     }
     // 其他來源（例如 api.anthropic.com）交給瀏覽器直接處理
 });
+
+// 頁面在有下載離線模型時，會在 FLAGS_CACHE 放一個 isolate 旗標。
+// 隔離會改變整個頁面的安全設定，只用連線翻譯時不需要，也就不開，降低出問題的機會。
+async function wantsIsolation() {
+    try {
+        const flags = await caches.open(FLAGS_CACHE);
+        return !!(await flags.match('isolate'));
+    } catch {
+        return false;
+    }
+}
 
 // 幫自己網域的回應加上「跨來源隔離」標頭。
 // 有了隔離，瀏覽器才開放 SharedArrayBuffer，離線的語音與翻譯模型才能用多執行緒跑（快數倍）。

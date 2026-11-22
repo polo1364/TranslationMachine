@@ -494,6 +494,11 @@
                 <button class="btn" type="button" id="btnModel-asrSmall" hidden>下載語音辨識模型・高準確（約 278 MB，辨識較慢）</button>
                 <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型・標準（約 170 MB，較快）</button>
             </div>
+            <div class="offline-box">
+                <span class="field__label">問題回報</span>
+                <p class="offline-box__status">語音中斷或無法使用時，重現一次問題後按下面的按鈕，把複製到的內容貼給開發者。內容只有事件與錯誤代碼，不含說話內容、譯文或 API Key。</p>
+                <button class="btn" type="button" id="btnCopyDiag">複製診斷資訊</button>
+            </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
                 <button class="btn btn--primary" type="submit">儲存</button>
@@ -548,6 +553,18 @@
             set(k, v) { try { localStorage.setItem(k, v); } catch { /* 無痕模式等情況忽略 */ } },
         };
         const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
+
+        // ---------- 診斷紀錄 ----------
+        // 語音辨識在各家瀏覽器、各種開啟方式下的行為差很多，出問題時光靠描述很難判斷原因。
+        // 這裡記下最近發生的事件（只記事件與錯誤代碼，不記說話內容、譯文或 API Key），
+        // 使用者可以在設定裡複製出來回報。
+        const diagLog = [];
+        function diag(message) {
+            diagLog.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
+            if (diagLog.length > 300) diagLog.shift();
+        }
+        window.addEventListener('error', (e) => diag(`JS 錯誤：${e.message} @${(e.filename || '').split('/').pop()}:${e.lineno}`));
+        window.addEventListener('unhandledrejection', (e) => diag(`未處理的錯誤：${e.reason?.name || ''} ${e.reason?.message || e.reason}`));
 
         const state = {
             mode: 'voice',
@@ -710,6 +727,7 @@
 
         /** 把錯誤轉成給使用者看的訊息；Key 有問題時順便開啟設定 */
         async function explainError(err) {
+            diag(`翻譯失敗：${err?.name || typeof err}${err?.status ? ` HTTP ${err.status}` : ''}${err instanceof UserFacingError ? ` ${err.message}` : ''}`);
             if (err instanceof UserFacingError) {
                 if (err.needsKey) openSettings();
                 return err.message;
@@ -780,6 +798,20 @@
         const MODELS_KEY = 'tm_models_v2';
         const modelKeysReady = new Set(JSON.parse(
             store.get(MODELS_KEY) ?? JSON.stringify(JSON.parse(store.get('tm_models', '[]')).filter((k) => k === 'asr'))));
+
+        /**
+         * 跨來源隔離（讓離線模型能用多執行緒）只在有下載離線模型時才需要。
+         * 它會改變整個頁面的安全設定，沒必要時不開，免得影響只用連線翻譯的情況。
+         * 用 Cache Storage 放一個旗標，service worker 讀到才會加上隔離標頭。
+         */
+        const wantsIsolation = () => modelKeysReady.size > 0;
+        async function syncIsolationFlag() {
+            try {
+                const flags = await caches.open('tm-flags');
+                if (wantsIsolation()) await flags.put('isolate', new Response('1'));
+                else await flags.delete('isolate');
+            } catch { /* 沒有 Cache Storage 就維持不隔離 */ }
+        }
         let mtWorker = null;
         let mtSeq = 0;
         const mtPending = new Map();
@@ -883,6 +915,7 @@
                 });
                 pack.keys.forEach((k) => modelKeysReady.add(k));
                 store.set(MODELS_KEY, JSON.stringify([...modelKeysReady]));
+                syncIsolationFlag();   // 下次開啟時啟用多執行緒
                 toast(`${pack.label}模型已就緒`);
             } catch (e) {
                 console.error(e);
@@ -1353,6 +1386,23 @@
         let activeBtn = null;
         let beepCtx = null;
 
+        // 聆聽時請系統不要讓螢幕變暗或鎖定：螢幕一鎖，頁面就被暫停，聆聽也跟著中斷。
+        let wakeLock = null;
+        async function requestWakeLock() {
+            if (!navigator.wakeLock || wakeLock) return;
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+                wakeLock.addEventListener('release', () => { wakeLock = null; });
+                if (!activeRec) releaseWakeLock();   // 等待期間聆聽已經結束
+            } catch (e) {
+                diag(`無法保持螢幕喚醒：${e.name}`);
+            }
+        }
+        function releaseWakeLock() {
+            wakeLock?.release().catch(() => {});
+            wakeLock = null;
+        }
+
         // iOS 要在使用者的觸碰動作裡先「唸」一次（空字串），之後才能自動朗讀譯文。
         // 只做一次，而且盡量在第一次觸碰畫面時就做，不要每次按麥克風都做：
         // 在 iOS 上，語音合成會搶走音訊通道，緊接著啟動的語音辨識可能因此中斷。
@@ -1437,6 +1487,7 @@
 
             // 辨識器（會重開很多次）
             let rec = null;
+            let recCount = 0;             // 這次聆聽總共開過幾個辨識器
             let recActive = false;        // 目前的辨識器是否還在跑（start 之後、onend 之前）
             let recError = '';
             let sessionFinal = '';        // 目前這個辨識器已確定的文字
@@ -1448,6 +1499,7 @@
             let restartTimer = 0;
             // 整次聆聽
             let userStopped = false;
+            let stopReason = 'user';      // 被要求結束的原因（使用者按的，或 App 離開畫面）
             let ended = false;
             let lastHeardAt = Date.now();
             let commitTimer = 0;
@@ -1601,11 +1653,12 @@
 
             // 交給外部（按鈕、切換模式）用來結束這次聆聽的把手
             const session = {
-                stop() {
+                stop(reason = 'user') {
                     userStopped = true;
+                    stopReason = reason;
                     clearTimeout(restartTimer);
-                    if (!recActive) { finish(); return; }   // 正在兩個辨識器之間的空檔
-                    try { rec.stop(); } catch { finish(); }
+                    if (!recActive) { finish(stopReason); return; }   // 正在兩個辨識器之間的空檔
+                    try { rec.stop(); } catch { finish(stopReason); }
                 },
             };
 
@@ -1640,21 +1693,25 @@
                     handleResult(finalText, interimText);
                 };
 
-                r.onerror = (e) => { recError = e.error; };
+                r.onerror = (e) => { recError = e.error; diag(`辨識器 #${recCount} 錯誤：${e.error}${e.message ? ` (${e.message})` : ''}`); };
 
                 // onerror 之後一定會接 onend，收尾統一在這裡做
                 r.onend = () => {
                     if (rec !== r) return;
                     recActive = false;
+                    const lived = Date.now() - sessionStartedAt;
+                    diag(`辨識器 #${recCount} 結束：存活 ${lived}ms，${sessionHeard ? `聽到 ${sessionAll.length} 字` : '沒聽到東西'}，錯誤=${recError || '無'}`);
                     // 這個辨識器聽到、但還沒送出的話，先送去翻，才不會因為它中斷而遺失
                     commitSegment();
-                    quickFailures = (!sessionHeard && Date.now() - sessionStartedAt < 1000) ? quickFailures + 1 : 0;
+                    quickFailures = (!sessionHeard && lived < 1000) ? quickFailures + 1 : 0;
                     const fatal = FATAL_REC_ERRORS.includes(recError);
                     const silentTooLong = Date.now() - lastHeardAt > MAX_SILENCE_MS;
-                    if (userStopped || fatal || silentTooLong || quickFailures >= 4 || activeRec !== session) {
-                        finish();
-                        return;
-                    }
+                    if (userStopped) return finish(stopReason);
+                    if (activeRec !== session) return finish('replaced');
+                    // 一開始就被拒絕是沒有權限；聽過幾段之後才被拒絕，則是瀏覽器不讓程式自己重新啟動
+                    if (fatal) return finish(recCount > 1 && (recError === 'not-allowed' || recError === 'service-not-allowed') ? 'restart-blocked' : `error:${recError}`);
+                    if (silentTooLong) return finish('silence');
+                    if (quickFailures >= 4) return finish('quick-failures');
                     restart(0);
                 };
 
@@ -1665,6 +1722,8 @@
                 recError = '';
                 sessionStartedAt = Date.now();
                 rec = r;
+                recCount++;
+                diag(`辨識器 #${recCount} 啟動（${r.lang}${localTag ? '，裝置端' : ''}）`);
                 r.start();
                 recActive = true;
             }
@@ -1673,19 +1732,30 @@
             function restart(attempt) {
                 clearTimeout(restartTimer);
                 restartTimer = setTimeout(() => {
-                    if (userStopped || ended) { finish(); return; }
+                    if (userStopped || ended) { finish(stopReason); return; }
                     try {
                         openRecognizer();
                     } catch (e) {
-                        console.warn('無法接續聆聽：', e);
-                        if (attempt < 3) restart(attempt + 1); else finish();
+                        diag(`重新啟動失敗（第 ${attempt + 1} 次）：${e.name} ${e.message}`);
+                        if (attempt < 3) restart(attempt + 1); else finish('restart-failed');
                     }
                 }, attempt || quickFailures ? 300 : 0);
             }
 
-            function finish() {
+            // 非使用者主動結束時，告訴使用者原因，也方便回報
+            const FINISH_NOTES = {
+                'silence': '太久沒有聽到聲音，已停止聆聽',
+                'restart-blocked': '瀏覽器不允許自動接續聆聽，要繼續請再按一次',
+                'restart-failed': '無法接續聆聽，要繼續請再按一次',
+                'quick-failures': '語音辨識一直無法啟動，要繼續請再按一次',
+                'hidden': 'App 離開畫面，已停止聆聽',
+            };
+
+            function finish(reason = 'user') {
                 if (ended) return;
                 ended = true;
+                diag(`聆聽結束：原因=${reason}，共 ${recCount} 個辨識器、${segmentCount + (seg?.text.trim() ? 1 : 0)} 段`);
+                releaseWakeLock();
                 clearTimeout(commitTimer);
                 clearTimeout(restartTimer);
                 if (seg?.text.trim()) {
@@ -1708,8 +1778,10 @@
                 }
 
                 if (segmentCount > 0) {
-                    // 不是使用者按的結束：提醒一下，免得以為還在聽
-                    if (!userStopped) toast('聆聽已結束，要繼續請再按一次');
+                    // 不是使用者按的結束：說明原因，免得以為還在聽
+                    if (reason !== 'user') {
+                        toast(FINISH_NOTES[reason] ?? `聆聽中斷（${reason.replace('error:', '')}），要繼續請再按一次`);
+                    }
                     if (pending > 0) setStatus('翻譯中', 'busy');
                     settle();
                     return;
@@ -1741,14 +1813,18 @@
 
             activeRec = session;
             activeBtn = btn;
+            diag(`開始聆聽（瀏覽器辨識）：${from}→${to}${localTag ? '，離線' : ''}`);
             openSegment().bubble.setPlaceholder('正在聆聽…');
             playBeep();
+            requestWakeLock();
             // 手機上語音辨識與另一條麥克風串流無法共用，硬開波形可能讓辨識中斷，改用示意動畫
             if (IS_MOBILE) startFakeMeter(role); else startMeter(role);
             try {
                 openRecognizer();
             } catch (e) {
                 console.error(e);
+                diag(`無法啟動語音辨識：${e.name} ${e.message}`);
+                releaseWakeLock();
                 ended = true;
                 activeRec = null;
                 activeBtn = null;
@@ -1897,8 +1973,10 @@
                 activeRec = null;
                 activeBtn = null;
                 stopMeter();
+                releaseWakeLock();
                 btn.classList.remove('is-recording');
                 el.voiceHint.textContent = '點一下開始說話，再點一下結束';
+                diag('聆聽結束（內建模型）');
             };
 
             let stream;
@@ -1907,7 +1985,8 @@
                 stream = await navigator.mediaDevices.getUserMedia({
                     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
                 });
-            } catch {
+            } catch (e) {
+                diag(`取得麥克風失敗：${e.name} ${e.message}`);
                 release();
                 setStatus('麥克風未授權', 'error');
                 toast('請允許此網站使用麥克風');
@@ -2020,15 +2099,17 @@
             const autoStop = setTimeout(finish, MODEL_REC_MAX_MS);
             session.stop = finish;
 
+            diag(`開始聆聽（內建模型 ${model}）：${from}→${to}${online ? '' : '，離線'}`);
             playBeep();
+            requestWakeLock();
             startMeter(role, stream);
             btn.classList.add('is-recording');
             el.voiceHint.textContent = '錄音中… 再點一下結束';
             setStatus(`錄音中（${LANGS[from].label}）`, 'listening');
         }
 
-        function stopRecordingIfAny() {
-            if (activeRec) activeRec.stop();
+        function stopRecordingIfAny(reason = 'user') {
+            if (activeRec) activeRec.stop(reason);
         }
 
         // ============================================================
@@ -2275,7 +2356,36 @@
         warmOfflineModels();    // 離線開啟 App 時先載入模型
         refreshLocalSpeech();   // 先查好離線語音狀態，離線時按麥克風才能立即判斷
         $('btnOfflineDownload').addEventListener('click', downloadOfflinePacks);
-        document.addEventListener('visibilitychange', () => { if (document.hidden) stopRecordingIfAny(); });
+        /** 診斷資訊：環境摘要＋最近的事件。不含說話內容、譯文或 API Key */
+        function buildDiagReport() {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const env = [
+                `時間：${new Date().toISOString()}`,
+                `瀏覽器：${navigator.userAgent}`,
+                `開啟方式：${IS_STANDALONE ? '主畫面（獨立 App）' : '瀏覽器分頁'}`,
+                `連線：${navigator.onLine ? '是' : '否'}｜已設定 Key：${state.apiKey ? '是' : '否'}｜模型：${state.model}`,
+                `語音辨識：${SR ? '有' : '無'}｜辨識方式：${state.asrEngine}｜即時預覽：${state.live ? '開' : '關'}`,
+                `跨來源隔離：${self.crossOriginIsolated ? '是' : '否'}｜Service Worker：${navigator.serviceWorker?.controller ? '已接管' : '未接管'}`,
+                `螢幕喚醒：${navigator.wakeLock ? '支援' : '不支援'}｜錄音：${navigator.mediaDevices?.getUserMedia ? '支援' : '不支援'}`,
+                `已下載的離線模型：${[...modelKeysReady].join(', ') || '無'}`,
+            ];
+            return `【譯機診斷資訊】\n${env.join('\n')}\n\n【最近事件】\n${diagLog.join('\n') || '（沒有紀錄）'}`;
+        }
+        $('btnCopyDiag').addEventListener('click', async () => {
+            const report = buildDiagReport();
+            try {
+                await navigator.clipboard.writeText(report);
+                toast('已複製診斷資訊');
+            } catch {
+                prompt('請全選並複製以下內容：', report);   // 剪貼簿不能用時，讓使用者自己全選複製
+            }
+        });
+        diag(`App 啟動：${IS_STANDALONE ? '主畫面' : '分頁'}，${navigator.onLine ? '連線' : '離線'}，Key=${state.apiKey ? '有' : '無'}，隔離=${self.crossOriginIsolated ? '是' : '否'}`);
+
+        document.addEventListener('visibilitychange', () => {
+            diag(`頁面${document.hidden ? '離開畫面' : '回到畫面'}`);
+            if (document.hidden) stopRecordingIfAny('hidden');
+        });
 
         renderControls();
         setIdleStatus();
@@ -2283,9 +2393,10 @@
 
         // PWA：註冊 service worker，就緒後預先載入 SDK 讓它進入離線快取
         if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))) {
-            // service worker 會幫頁面加上跨來源隔離標頭，離線模型才能用多執行緒（快約一倍）。
-            // 第一次造訪時頁面是在 service worker 接手前載入的，還沒有隔離，所以重新載入一次。
+            // 有下載離線模型時，service worker 會幫頁面加上跨來源隔離標頭，模型才能用多執行緒（快約一倍）。
+            // 頁面若是在旗標寫入或 service worker 接手之前載入的，還沒有隔離，所以重新載入一次。
             const ensureIsolation = () => {
+                if (!wantsIsolation()) return false;   // 只用連線翻譯時不需要隔離
                 if (self.crossOriginIsolated || !navigator.serviceWorker.controller) return false;
                 if (el.screen.querySelector('.msg') || el.apiKey.value || !navigator.onLine) return false;   // 不打斷使用中的畫面
                 try {
@@ -2296,7 +2407,8 @@
                 return true;
             };
             navigator.serviceWorker.addEventListener('controllerchange', ensureIsolation);
-            navigator.serviceWorker.register('sw.js')
+            syncIsolationFlag()
+                .then(() => navigator.serviceWorker.register('sw.js'))
                 .then(() => navigator.serviceWorker.ready)
                 .then(() => { if (!ensureIsolation() && navigator.onLine) loadSdk().catch(() => {}); })
                 .catch((e) => console.warn('Service worker 註冊失敗：', e));
