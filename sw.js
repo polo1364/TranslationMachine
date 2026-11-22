@@ -1,6 +1,6 @@
 // 譯機 service worker
 // 改版時請調整 VERSION，舊快取會在 activate 時清掉。
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL_CACHE = `tm-shell-${VERSION}`;
 const CDN_CACHE = `tm-cdn-${VERSION}`;
 const SHELL = [
@@ -13,8 +13,9 @@ const SHELL = [
     './icons/icon-maskable-512.png',
     './icons/apple-touch-icon.png',
 ];
-// SDK 來源（版本固定，內容不會變）
-const CDN_HOSTS = new Set(['esm.sh']);
+// 外部模組來源（版本固定，內容不會變）：Claude SDK、Tesseract.js 的字庫
+// Tesseract 的程式本體放在同網域的 vendor/，第一次使用時由 networkFirst 存進快取
+const CDN_HOSTS = new Set(['esm.sh', 'cdn.jsdelivr.net']);
 
 self.addEventListener('install', (event) => {
     event.waitUntil(

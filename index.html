@@ -17,7 +17,8 @@
     <script type="importmap">
       {
         "imports": {
-          "@anthropic-ai/sdk": "https://esm.sh/@anthropic-ai/sdk@1.12.0"
+          "@anthropic-ai/sdk": "https://esm.sh/@anthropic-ai/sdk@1.12.0",
+          "tesseract.js": "./vendor/tesseract/tesseract.esm.min.js"
         }
       }
     </script>
@@ -459,9 +460,9 @@
                 <span>說話時即時預覽翻譯<small>關閉後只在說完時翻譯一次，較省用量</small></span>
             </label>
             <div class="offline-box">
-                <span class="field__label">離線文字翻譯</span>
+                <span class="field__label">離線使用</span>
                 <p class="offline-box__status" id="offlineStatus">檢查中…</p>
-                <button class="btn" type="button" id="btnOfflineDownload" hidden>下載離線語言包</button>
+                <button class="btn" type="button" id="btnOfflineDownload" hidden>下載離線資源</button>
             </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
@@ -698,9 +699,8 @@
             return deviceTranslators.get(key);
         }
 
-        async function translateOnDevice(text, to) {
+        async function translateOnDevice(text, to, from = detectLang(text)) {
             if (!deviceSupported) throw new UserFacingError('目前離線，且此瀏覽器不支援離線翻譯');
-            const from = detectLang(text);
             if (from === to) return text;
             if (await pairAvailability(from, to) !== 'available') {
                 throw new UserFacingError('離線語言包尚未下載，請連線後到設定下載');
@@ -716,48 +716,186 @@
             }
         }
 
+        /** 逐行翻譯以保留原本的換行與區塊（用於 OCR 結果） */
+        async function translateLinesOnDevice(text, to) {
+            const out = [];
+            for (const line of text.split('\n')) {
+                out.push(line.trim() ? await translateOnDevice(line.trim(), to) : '');
+            }
+            return out.join('\n').trim();
+        }
+
+        // ---------- 離線語音辨識（Web Speech API 的裝置端模式） ----------
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const speechLocalSupported = !!SpeechRecognition
+            && typeof SpeechRecognition.available === 'function'
+            && typeof SpeechRecognition.install === 'function';
+        // 各語言依序嘗試的語言代碼；瀏覽器實際支援哪些要執行時才知道
+        const SPEECH_TAGS = { zh: ['cmn-Hant-TW', 'zh-TW'], ja: ['ja-JP'], en: ['en-US'] };
+        const localSpeech = {};   // { zh: { tag, state }, ... }
+
+        async function refreshLocalSpeech() {
+            if (!speechLocalSupported) return;
+            await Promise.all(Object.entries(SPEECH_TAGS).map(async ([key, tags]) => {
+                let best = { tag: tags[0], state: 'unavailable' };
+                for (const tag of tags) {
+                    let s = 'unavailable';
+                    try { s = await withTimeout(SpeechRecognition.available({ langs: [tag], processLocally: true }), 8000); }
+                    catch { /* 視為不可用 */ }
+                    if (s === 'available') { best = { tag, state: s }; break; }
+                    if (s !== 'unavailable' && best.state === 'unavailable') best = { tag, state: s };
+                }
+                localSpeech[key] = best;
+            }));
+        }
+
+        // ---------- 離線圖片文字辨識（Tesseract.js，WASM 在瀏覽器內執行） ----------
+        const OCR_LANG = { zh: 'chi_tra', ja: 'jpn', en: 'eng' };
+        const OCR_MAX_SIDE = 2000;
+        const CJK = '\\u3040-\\u30ff\\u3400-\\u9fff';
+        const CJK_GAP = new RegExp(`(?<=[${CJK}])[ \\t]+(?=[${CJK}])`, 'g');
+        let ocrModule = null;
+        let ocrWorker = null;
+        let ocrWorkerLangs = '';
+        let ocrProgress = null;   // 目前的進度回呼
+
+        async function getOcrWorker(langKeys) {
+            const langs = langKeys.map((k) => OCR_LANG[k]);
+            const id = langs.join('+');
+            if (ocrWorker && ocrWorkerLangs === id) return ocrWorker;
+            if (ocrWorker) { await ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
+            ocrModule ??= await import('tesseract.js');
+            const createWorker = ocrModule.createWorker ?? ocrModule.default.createWorker;
+            // 辨識程式放在自己的網域（vendor/），service worker 才能快取、離線才載得到
+            ocrWorker = await createWorker(langs, 1, {
+                workerPath: new URL('vendor/tesseract/worker.min.js', location.href).href,
+                corePath: new URL('vendor/tesseract/', location.href).href,
+                workerBlobURL: false,
+                logger: (m) => ocrProgress?.(m),
+            });
+            ocrWorkerLangs = id;
+            return ocrWorker;
+        }
+
+        /** 辨識圖片文字。來源語言未知，所以用「目標語言以外的兩種」一起辨識 */
+        async function ocrImage(objectUrl, to, onProgress) {
+            const img = await loadImage(objectUrl);
+            const scale = Math.min(1, OCR_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.naturalWidth * scale);
+            canvas.height = Math.round(img.naturalHeight * scale);
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            ocrProgress = (m) => { if (m.status === 'recognizing text') onProgress?.(m.progress); };
+            try {
+                const worker = await getOcrWorker(Object.keys(OCR_LANG).filter((k) => k !== to));
+                const { data } = await worker.recognize(canvas);
+                // Tesseract 會在中日文字之間插入空白，這裡移除
+                return data.text.replace(CJK_GAP, '').replace(/\n{3,}/g, '\n\n').trim();
+            } catch (e) {
+                if (e instanceof UserFacingError) throw e;
+                console.error(e);
+                throw new UserFacingError(store.get('tm_ocr_ready') ? '圖片文字辨識失敗' : '離線圖片辨識尚未下載，請連線後到設定下載');
+            } finally {
+                ocrProgress = null;
+            }
+        }
+
+        // ---------- 離線資源的狀態與下載 ----------
+        let pairStates = [];   // 最近一次查到的各語言組合狀態，順序同 DEVICE_PAIRS
         async function refreshOfflineStatus() {
             const statusEl = $('offlineStatus');
             const btn = $('btnOfflineDownload');
-            if (!deviceSupported) {
-                statusEl.textContent = '此瀏覽器不支援。目前只有桌面版 Chrome 138 以上與 Edge 可用，手機尚不支援。';
-                btn.hidden = true;
-                return;
-            }
             statusEl.textContent = '檢查中…';
-            const states = await Promise.all(DEVICE_PAIRS.map(([from, to]) => pairAvailability(from, to)));
-            const ready = states.filter((s) => s === 'available').length;
-            const usable = states.filter((s) => s !== 'unavailable').length;
-            if (ready === DEVICE_PAIRS.length) {
-                statusEl.textContent = '已就緒：離線時文字模式會自動改用裝置端翻譯（品質低於 Claude）。';
-                btn.hidden = true;
-            } else if (usable === 0) {
-                statusEl.textContent = '此裝置無法使用中、日、英的離線語言包。';
-                btn.hidden = true;
+            const lines = [];
+            let canDownload = false;
+
+            // 翻譯
+            let translateReady = false;
+            if (!deviceSupported) {
+                lines.push('翻譯：此瀏覽器不支援（需桌面版 Chrome 138 以上或 Edge）');
             } else {
-                statusEl.textContent = `已下載 ${ready}／${DEVICE_PAIRS.length} 組語言。下載後，離線時文字模式會自動改用裝置端翻譯。`;
-                btn.hidden = false;
-                btn.disabled = false;
+                const states = await Promise.all(DEVICE_PAIRS.map(([from, to]) => pairAvailability(from, to)));
+                pairStates = states;
+                const ready = states.filter((s) => s === 'available').length;
+                const usable = states.filter((s) => s !== 'unavailable').length;
+                translateReady = ready === DEVICE_PAIRS.length;
+                if (translateReady) lines.push('翻譯：已就緒');
+                else if (usable === 0) lines.push('翻譯：此裝置無法使用');
+                else { lines.push(`翻譯：已下載 ${ready}／${DEVICE_PAIRS.length} 組語言`); canDownload = true; }
             }
+
+            // 語音
+            if (!speechLocalSupported) {
+                lines.push('語音：此瀏覽器不支援裝置端語音辨識');
+            } else {
+                await refreshLocalSpeech();
+                const parts = Object.keys(SPEECH_TAGS).map((k) => {
+                    const s = localSpeech[k].state;
+                    if (s !== 'available' && s !== 'unavailable') canDownload = true;
+                    return `${LANGS[k].label}${s === 'available' ? '已就緒' : s === 'unavailable' ? '不支援' : '未下載'}`;
+                });
+                lines.push(`語音：${parts.join('、')}`);
+            }
+
+            // 圖片
+            if (store.get('tm_ocr_ready')) lines.push('圖片文字辨識：已就緒');
+            else { lines.push('圖片文字辨識：未下載（約數十 MB）'); canDownload = true; }
+
+            if (!deviceSupported) lines.push('沒有離線翻譯時，語音與圖片離線也無法翻譯。');
+            statusEl.innerText = lines.join('\n');
+            btn.hidden = !canDownload;
+            btn.disabled = false;
         }
 
         async function downloadOfflinePacks() {
             const statusEl = $('offlineStatus');
             const btn = $('btnOfflineDownload');
             btn.disabled = true;
-            const progress = new Array(DEVICE_PAIRS.length).fill(0);
+            const progress = { 翻譯: 0, 語音: 0, 圖片: 0 };
             const render = () => {
-                const pct = Math.round(progress.reduce((a, b) => a + b, 0) / progress.length * 100);
-                statusEl.textContent = `下載中… ${pct}%`;
+                statusEl.innerText = Object.entries(progress).map(([k, v]) => `${k}：${Math.round(v * 100)}%`).join('\n');
             };
+            const jobs = [];
+            const DOWNLOAD_TIMEOUT = 15 * 60 * 1000;   // 瀏覽器沒回應時不要永遠卡住
+
+            // 翻譯與語音的下載必須在點擊當下一次送出，瀏覽器才允許開始
+            const pairs = DEVICE_PAIRS.filter((_, i) => pairStates[i] && pairStates[i] !== 'unavailable');
+            if (pairs.length) {
+                const each = new Array(pairs.length).fill(0);
+                const update = () => { progress.翻譯 = each.reduce((a, b) => a + b, 0) / each.length; render(); };
+                pairs.forEach(([from, to], i) => jobs.push(withTimeout(
+                    getDeviceTranslator(from, to, (loaded) => { each[i] = loaded; update(); })
+                        .then(() => { each[i] = 1; update(); }), DOWNLOAD_TIMEOUT)));
+            } else {
+                delete progress.翻譯;
+            }
+            const wanted = Object.values(localSpeech).filter((s) => s.state !== 'unavailable');
+            if (!wanted.length) delete progress.語音;
+            if (wanted.length) {
+                let done = 0;
+                wanted.forEach(({ tag }) => jobs.push(withTimeout(
+                    SpeechRecognition.install({ langs: [tag], processLocally: true }).then((ok) => {
+                        if (!ok) throw new Error(`install ${tag} failed`);
+                        progress.語音 = ++done / wanted.length; render();
+                    }), DOWNLOAD_TIMEOUT)));
+            }
+            // 圖片：把三種語言組合各載入一次，辨識程式與字庫就會進快取
+            jobs.push((async () => {
+                const combos = Object.keys(OCR_LANG).map((to) => Object.keys(OCR_LANG).filter((k) => k !== to));
+                for (let i = 0; i < combos.length; i++) {
+                    await getOcrWorker(combos[i]);
+                    progress.圖片 = (i + 1) / combos.length; render();
+                }
+                store.set('tm_ocr_ready', '1');
+            })());
             render();
-            // 必須在點擊當下一次送出所有 create()，瀏覽器才允許開始下載
-            const results = await Promise.allSettled(DEVICE_PAIRS.map(([from, to], i) =>
-                getDeviceTranslator(from, to, (loaded) => { progress[i] = loaded; render(); })
-                    .then(() => { progress[i] = 1; render(); })));
+
+            const results = await Promise.allSettled(jobs);
+            results.filter((r) => r.status === 'rejected').forEach((r) => console.warn('離線資源下載失敗：', r.reason));
             const failed = results.filter((r) => r.status === 'rejected').length;
             await refreshOfflineStatus();
-            toast(failed ? `有 ${failed} 組語言下載失敗` : '離線語言包已就緒');
+            toast(failed ? `有 ${failed} 項下載失敗，可稍後再試` : '離線資源已就緒');
         }
 
         // ============================================================
@@ -850,6 +988,7 @@
 
             return {
                 setSource(finalText, interimText = '') {
+                    src.hidden = false;
                     src.classList.remove('is-placeholder');
                     src.textContent = finalText;
                     if (interimText) src.append(make('span', 'msg__interim', interimText));
@@ -975,7 +1114,6 @@
         // ============================================================
         //  語音模式
         // ============================================================
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let activeRec = null;      // 目前的辨識器
         let activeBtn = null;
         let beepCtx = null;
@@ -1005,24 +1143,36 @@
                 toast('此瀏覽器不支援語音辨識，請改用 Chrome、Edge 或 Safari，或使用文字模式');
                 return;
             }
+            if (!navigator.onLine) {
+                // 離線：改用裝置端語音辨識＋裝置端翻譯
+                const from = role === 'me' ? 'zh' : state.other;
+                const local = localSpeech[from];
+                if (local?.state !== 'available') {
+                    setStatus('離線中', 'offline');
+                    toast(speechLocalSupported ? `離線${LANGS[from].label}語音尚未下載，請連線後到設定下載` : '此瀏覽器不支援離線語音辨識');
+                    return;
+                }
+                startRecording(role, btn, local.tag);
+                return;
+            }
             if (!state.apiKey) { openSettings(); return; }
-            if (!navigator.onLine) { setStatus('離線中', 'offline'); toast('語音翻譯需要網路連線'); return; }
             startRecording(role, btn);
         }
 
-        function startRecording(role, btn) {
+        function startRecording(role, btn, localTag = null) {
             // 開始時就固定語言組合，錄音途中切換語言不影響這一句
             const from = role === 'me' ? 'zh' : state.other;
             const to = role === 'me' ? state.other : 'zh';
             const who = role === 'me' ? '我' : '對方';
 
             const rec = new SpeechRecognition();
-            rec.lang = LANGS[from].rec;
+            rec.lang = localTag ?? LANGS[from].rec;
+            if (localTag) rec.processLocally = true;
             rec.interimResults = true;
             rec.continuous = true;
             rec.maxAlternatives = 1;
 
-            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}` });
+            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${localTag ? ' · 離線' : ''}` });
             bubble.setPlaceholder('正在聆聽…');
 
             let heard = '';
@@ -1058,9 +1208,10 @@
                 liveJob = null;
                 setStatus('翻譯中', 'busy');
                 if (!hasPreview) bubble.setPending('');
-                const job = streamClaude(textContent(text, to), (partial) => bubble.setPending(partial));
                 try {
-                    const result = await job.promise;
+                    const result = localTag
+                        ? await translateOnDevice(text, to, from)
+                        : await streamClaude(textContent(text, to), (partial) => bubble.setPending(partial)).promise;
                     const btnSpeak = bubble.finalize(result, to);
                     setIdleStatus();
                     speak(result, to, btnSpeak);
@@ -1087,7 +1238,7 @@
                 heard = finalText + interimText;
                 if (!heard) return;
                 bubble.setSource(finalText, interimText);
-                if (state.live) {
+                if (state.live && !localTag) {
                     clearTimeout(liveTimer);
                     const snapshot = heard.trim();
                     if (snapshot.length >= 2) liveTimer = setTimeout(() => runLive(snapshot), LIVE_DEBOUNCE_MS);
@@ -1116,7 +1267,10 @@
                 }
                 liveJob?.abort();
                 bubble.remove();
-                if (recError === 'not-allowed' || recError === 'service-not-allowed') {
+                if (localTag && (recError === 'service-not-allowed' || recError === 'language-not-supported')) {
+                    setStatus('離線語音無法使用', 'error');
+                    toast('離線語音包無法使用，請連線後到設定重新下載');
+                } else if (recError === 'not-allowed' || recError === 'service-not-allowed') {
                     setStatus('麥克風未授權', 'error');
                     toast('請允許此網站使用麥克風');
                 } else if (recError === 'audio-capture') {
@@ -1230,14 +1384,31 @@
 
         async function translateImage(file) {
             if (!file.type.startsWith('image/')) { toast('請選擇圖片檔'); return; }
-            if (!state.apiKey) { openSettings(); return; }
+            const offline = !navigator.onLine;
+            if (!offline && !state.apiKey) { openSettings(); return; }
 
             const to = state.target;
             const objectUrl = URL.createObjectURL(file);
             objectUrls.push(objectUrl);   // 清除對話時才釋放，圖片預覽才不會失效
-            const bubble = createBubble({ side: 'me', tag: `圖片 → ${LANGS[to].label}`, imageUrl: objectUrl });
+            const bubble = createBubble({ side: 'me', tag: `圖片 → ${LANGS[to].label}${offline ? ' · 離線' : ''}`, imageUrl: objectUrl });
             bubble.setPending('');
             setStatus('圖片翻譯中', 'busy');
+            if (offline) {
+                // 離線：先在裝置上辨識文字，再用裝置端翻譯
+                try {
+                    const text = await ocrImage(objectUrl, to, (p) => setStatus(`辨識文字 ${Math.round(p * 100)}%`, 'busy'));
+                    if (!text) throw new UserFacingError('圖片中沒有辨識到文字');
+                    bubble.setSource(text);
+                    setStatus('離線翻譯中', 'busy');
+                    bubble.finalize(await translateLinesOnDevice(text, to), to);
+                    setIdleStatus();
+                } catch (err) {
+                    const msg = await explainError(err);
+                    bubble.fail(msg);
+                    setStatus(msg, 'error');
+                }
+                return;
+            }
             try {
                 const { data, mediaType } = await prepareImage(file, objectUrl);
                 const content = [
@@ -1357,13 +1528,14 @@
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.modal.hidden) closeSettings(); });
 
         window.addEventListener('online', () => { setIdleStatus(); toast('已恢復連線'); });
-        window.addEventListener('offline', () => { stopRecordingIfAny(); setIdleStatus(); toast(deviceSupported ? '目前離線：文字模式改用裝置端翻譯' : '目前離線：可瀏覽對話與朗讀，翻譯需連線'); });
+        window.addEventListener('offline', () => { stopRecordingIfAny(); setIdleStatus(); toast(deviceSupported ? '目前離線：改用裝置端翻譯' : '目前離線：可瀏覽對話與朗讀，翻譯需連線'); });
+        refreshLocalSpeech();   // 先查好離線語音狀態，離線時按麥克風才能立即判斷
         $('btnOfflineDownload').addEventListener('click', downloadOfflinePacks);
         document.addEventListener('visibilitychange', () => { if (document.hidden) stopRecordingIfAny(); });
 
         renderControls();
         setIdleStatus();
-        if (!state.apiKey) openSettings();
+        if (!state.apiKey && navigator.onLine) openSettings();   // 離線時不需要 Key，不打擾
 
         // PWA：註冊 service worker，就緒後預先載入 SDK 讓它進入離線快取
         if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))) {
