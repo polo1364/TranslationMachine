@@ -10,6 +10,11 @@ const MODELS = {
     'ja>en': 'Xenova/opus-mt-ja-en',
     'en>ja': 'Kadonox/fugumt-en-ja-onnx',
 };
+// 實測品質主要掉在解碼器的 8 位元量化（例如「お会計をお願いします」會被翻成 Please check it out.）；
+// 解碼器改用 fp16 後譯文與未壓縮版一致，編碼器維持 8 位元量化則沒有影響。
+const MT_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'fp16' };
+// 例外：英→日模型的 fp16 解碼器檔無法載入（ONNX 判定為無效模型），改用未壓縮的 fp32，只多約 6 MB
+const MT_DTYPE_OVERRIDE = { 'en>ja': { encoder_model: 'q8', decoder_model_merged: 'fp32' } };
 const MAX_LOADED = 2;   // 同時留在記憶體的翻譯模型數，避免手機記憶體不足
 
 // 語音辨識：Whisper base 多語言版。編碼器維持原精度（量化後辨識率掉很多），解碼器用 8 位元量化。
@@ -58,17 +63,10 @@ async function getPipe(key, onProgress) {
         loaded.delete(oldKey);
         oldPipe.then((p) => p.dispose?.()).catch(() => {});
     }
-    const files = new Map();
     const p = pipeline('translation', MODELS[key], {
-        dtype: 'q8',
+        dtype: MT_DTYPE_OVERRIDE[key] ?? MT_DTYPE,
         device: 'wasm',
-        progress_callback: (e) => {
-            if (!onProgress || e.status !== 'progress' || !e.total) return;
-            files.set(e.file, [e.loaded, e.total]);
-            let done = 0, total = 0;
-            for (const [l, t] of files.values()) { done += l; total += t; }
-            onProgress(done / total);
-        },
+        progress_callback: progressTracker(onProgress),
     }).catch((err) => { loaded.delete(key); throw err; });
     loaded.set(key, p);
     return p;
@@ -110,30 +108,71 @@ function route(from, to) {
     return [`${from}>en`, `en>${to}`];
 }
 
-/** 切成句子再翻，避免超過模型長度上限，也保留換行 */
+/**
+ * 切成句子再翻。這些模型一次只可靠地處理一句，整段丟進去會漏掉後面的句子。
+ * 中日文在 。！？ 後切；英文在句點後接空白與大寫／數字／引號時才切，避免切到小數點與縮寫。
+ */
 function splitSentences(line) {
-    return line.match(/[^。！？!?]+[。！？!?]*|[。！？!?]+/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
+    return line
+        .split(/(?<=[。！？!?])\s*|(?<=\.)\s+(?=[A-Z0-9"'“(])/)
+        .map((s) => s.trim())
+        .filter(Boolean);
 }
 
+/** 模型輸出的中日文常帶半形標點，換成全形 */
+function fixPunctuation(text, lang) {
+    if (lang === 'zh') {
+        return text.replace(/([^\x00-\x7f])\s*([,?!:;])\s*/g, (_, ch, p) => ch + { ',': '，', '?': '？', '!': '！', ':': '：', ';': '；' }[p])
+            .replace(/([^\x00-\x7f])\.$/, '$1。');
+    }
+    if (lang === 'ja') {
+        return text.replace(/([^\x00-\x7f])\s*([?!])\s*/g, (_, ch, p) => ch + { '?': '？', '!': '！' }[p]);
+    }
+    return text;
+}
+
+/**
+ * 用一個模型翻一段文字。每一步都重新切句：經英文轉譯時，上一步可能把一句翻成兩句，
+ * 不重新切的話第二句會被模型丟掉。
+ */
 async function runStep(key, text) {
     const pipe = await getPipe(key);
-    const input = key.startsWith('zh>') ? toSimplified(text) : text;
-    const [out] = await pipe(input, { max_new_tokens: 256 });
-    const result = out.translation_text.trim();
-    return key.endsWith('>zh') ? toTraditional(result) : result;
+    const target = key.slice(-2);
+    const parts = [];
+    for (const sentence of splitSentences(text)) {
+        const input = key.startsWith('zh>') ? toSimplified(sentence) : sentence;
+        const [out] = await pipe(input, { max_new_tokens: 256 });
+        let result = out.translation_text.trim();
+        if (!result) continue;
+        result = fixPunctuation(target === 'zh' ? toTraditional(result) : result, target);
+        // 中日文沒有空白可分隔句子，缺句尾標點時補上，免得兩句黏在一起
+        if (target !== 'en' && !/[。！？…」』）]$/.test(result)) result += '。';
+        parts.push(result);
+    }
+    return parts.join(target === 'en' ? ' ' : '');
+}
+
+/** 換成新精度後，舊的量化解碼器檔已用不到，從快取刪掉以釋放空間 */
+async function dropStaleFiles() {
+    try {
+        const cache = await caches.open('transformers-cache');
+        for (const request of await cache.keys()) {
+            const isOurs = Object.values(MODELS).some((m) => request.url.includes(`/${m}/`));
+            if (isOurs && request.url.endsWith('decoder_model_merged_quantized.onnx')) await cache.delete(request);
+        }
+    } catch { /* 清不掉只是多佔空間，不影響功能 */ }
 }
 
 async function translate(text, from, to) {
     const keys = route(from, to);
     const lines = [];
     for (const line of text.split('\n')) {
-        const parts = [];
-        for (const sentence of splitSentences(line)) {
-            let current = sentence;
-            for (const key of keys) current = await runStep(key, current);
-            parts.push(current);
+        let current = line.trim();
+        for (const key of keys) {
+            if (!current) break;
+            current = await runStep(key, current);
         }
-        lines.push(parts.join(to === 'en' ? ' ' : ''));
+        lines.push(current);
     }
     return lines.join('\n').trim();
 }
@@ -151,6 +190,7 @@ async function handle(data) {
                 else await getPipe(data.keys[i], report);
                 report(1);
             }
+            await dropStaleFiles();
             self.postMessage({ id, type: 'done' });
         } else if (type === 'transcribe') {
             self.postMessage({ id, type: 'done', result: await transcribe(data.audio, data.lang) });

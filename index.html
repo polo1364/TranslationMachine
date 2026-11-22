@@ -463,8 +463,8 @@
                 <span class="field__label">離線使用</span>
                 <p class="offline-box__status" id="offlineStatus">檢查中…</p>
                 <button class="btn" type="button" id="btnOfflineDownload" hidden>下載語音與圖片辨識資源</button>
-                <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 216 MB）</button>
-                <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 242 MB）</button>
+                <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 326 MB）</button>
+                <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 351 MB）</button>
                 <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型（約 130 MB）</button>
             </div>
             <div class="row">
@@ -697,11 +697,14 @@
 
         // ---------- 內建翻譯模型（Transformers.js，在 worker 內執行，手機也能用） ----------
         const MODEL_PACKS = {
-            zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 216 MB' },
-            jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 242 MB' },
+            zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 326 MB' },
+            jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 351 MB' },
             asr: { label: '語音辨識', keys: ['asr'], size: '約 130 MB' },   // Whisper，給沒有裝置端語音辨識的瀏覽器（手機）
         };
-        const modelKeysReady = new Set(JSON.parse(store.get('tm_models', '[]')));
+        // v2：翻譯模型改用較高精度的解碼器，舊版下載的翻譯模型需重新下載；語音模型不變，沿用舊紀錄
+        const MODELS_KEY = 'tm_models_v2';
+        const modelKeysReady = new Set(JSON.parse(
+            store.get(MODELS_KEY) ?? JSON.stringify(JSON.parse(store.get('tm_models', '[]')).filter((k) => k === 'asr'))));
         let mtWorker = null;
         let mtSeq = 0;
         const mtPending = new Map();
@@ -790,7 +793,7 @@
                     btn.textContent = `下載${pack.label}模型… ${Math.round(p * 100)}%`;
                 });
                 pack.keys.forEach((k) => modelKeysReady.add(k));
-                store.set('tm_models', JSON.stringify([...modelKeysReady]));
+                store.set(MODELS_KEY, JSON.stringify([...modelKeysReady]));
                 toast(`${pack.label}模型已就緒`);
             } catch (e) {
                 console.error(e);
