@@ -271,6 +271,10 @@
         }
         .meter[data-role="me"] .meter__bar { background: var(--me); opacity: 1; }
         .meter[data-role="other"] .meter__bar { background: var(--other); opacity: 1; }
+        .meter.is-fake .meter__bar { animation: fake-meter 0.9s ease-in-out infinite; }
+        .meter.is-fake .meter__bar:nth-child(3n) { animation-delay: -0.3s; }
+        .meter.is-fake .meter__bar:nth-child(3n + 1) { animation-delay: -0.6s; }
+        @keyframes fake-meter { 0%, 100% { transform: scaleY(0.15); } 50% { transform: scaleY(0.7); } }
         .hint { text-align: center; font-size: 12.5px; color: var(--muted); min-height: 1.4em; }
 
         /* 文字 */
@@ -315,6 +319,7 @@
             background: var(--card); border: 1px solid var(--line); color: var(--text);
             font: inherit; font-size: 16px;
         }
+        .field__input--area { resize: vertical; min-height: 76px; font-size: 14px; line-height: 1.5; }
         .check { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; font-size: 13.5px; line-height: 1.5; color: var(--text-2); cursor: pointer; }
         .check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--me); flex: none; }
         .check small { display: block; color: var(--muted); }
@@ -459,6 +464,11 @@
                 <input type="checkbox" id="liveToggle">
                 <span>說話時即時預覽翻譯<small>關閉後只在說完時翻譯一次，較省用量；離線時關閉也較省電</small></span>
             </label>
+            <label class="field">
+                <span class="field__label">自訂詞彙（專有名詞的固定譯法）</span>
+                <textarea class="field__input field__input--area" id="glossaryInput" rows="3" spellcheck="false"
+                    placeholder="每行一筆：中文 | 日文 | 英文&#10;例：陳小明 | チン・ショウメイ | Chen Xiaoming&#10;沒有的語言留空即可"></textarea>
+            </label>
             <div class="offline-box">
                 <span class="field__label">離線使用</span>
                 <p class="offline-box__status" id="offlineStatus">檢查中…</p>
@@ -525,6 +535,15 @@
             live: store.get('tm_live', '1') === '1',
             apiKey: store.get('tm_anthropic_key', ''),
         };
+
+        /** 自訂詞彙：每行「中文 | 日文 | 英文」，至少要有兩種語言才有用 */
+        function parseGlossary(raw) {
+            return raw.split('\n')
+                .map((line) => line.split(/[|｜]/).map((part) => part.trim()))
+                .map(([zh = '', ja = '', en = '']) => ({ zh, ja, en }))
+                .filter((e) => [e.zh, e.ja, e.en].filter(Boolean).length >= 2);
+        }
+        let customGlossary = parseGlossary(store.get('tm_glossary', ''));
 
         const el = {
             screen: $('screen'), empty: $('empty'), emptyHint: $('emptyHint'), emptyOther: $('emptyOther'),
@@ -633,9 +652,15 @@
             };
         }
 
+        /** 把使用者的自訂詞彙附在提示裡，讓連線翻譯也用同一套譯法 */
+        const glossaryNote = () => (customGlossary.length
+            ? '\nWhen these terms appear, use exactly these translations (Chinese | Japanese | English; "-" means not provided):\n'
+                + customGlossary.map((e) => [e.zh, e.ja, e.en].map((x) => x || '-').join(' | ')).join('\n') + '\n'
+            : '');
+
         const textContent = (text, targetKey) => [{
             type: 'text',
-            text: `Translate into ${LANGS[targetKey].prompt}.\n<source>\n${text}\n</source>`,
+            text: `Translate into ${LANGS[targetKey].prompt}.${glossaryNote()}\n<source>\n${text}\n</source>`,
         }];
 
         /** 把錯誤轉成給使用者看的訊息；Key 有問題時順便開啟設定 */
@@ -791,7 +816,7 @@
             // 2. App 內建的翻譯模型（手機也能用）
             if (modelRouteReady(from, to)) {
                 try {
-                    const result = await mtCall({ type: 'translate', text, from, to, offline: !navigator.onLine });
+                    const result = await mtCall({ type: 'translate', text, from, to, glossary: customGlossary, offline: !navigator.onLine });
                     if (result) return result;
                     throw new Error('empty');
                 } catch (e) {
@@ -1033,28 +1058,54 @@
             synth?.cancel();
         }
 
+        /**
+         * 把長文切成一句一句唸。Chrome 用線上語音時，單一段朗讀超過約 15 秒會自己停掉，
+         * 長譯文只唸得到前半；逐句排隊就不會碰到這個限制。
+         */
+        function splitForSpeech(text) {
+            const chunks = [];
+            for (const sentence of text.split(/(?<=[。！？!?\n])|(?<=\.)\s+/)) {
+                let rest = sentence.trim();
+                // 沒有標點的超長句再依逗號或固定長度切
+                while (rest.length > 160) {
+                    const cut = Math.max(rest.lastIndexOf('，', 160), rest.lastIndexOf('、', 160), rest.lastIndexOf(', ', 160));
+                    const at = cut > 40 ? cut + 1 : 160;
+                    chunks.push(rest.slice(0, at));
+                    rest = rest.slice(at).trim();
+                }
+                if (rest) chunks.push(rest);
+            }
+            return chunks;
+        }
+
         function speak(text, langKey, btn = null) {
             if (!synth || !text) return;
-            const wasSame = currentUtterance && currentUtterance.text === text && synth.speaking;
+            const wasSame = currentUtterance && currentUtterance.text === text && (synth.speaking || synth.pending);
             stopSpeaking();
             if (wasSame) { setIdleStatus(); return; }   // 再點一次同一則＝停止
 
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = LANGS[langKey].speech;
-            currentUtterance = u;
+            // currentUtterance 代表「這一整則朗讀」；utterances 保留各句的參考，避免被提早回收
+            const session = { text, utterances: [] };
+            currentUtterance = session;
             currentSpeakBtn = btn;
             btn?.classList.add('is-active');
             setStatus('朗讀中', 'speaking');
             const done = (failed) => {
-                if (currentUtterance !== u) return;   // 已被新的朗讀或停止取代
+                if (currentUtterance !== session) return;   // 已被新的朗讀或停止取代
                 currentUtterance = null;
                 btn?.classList.remove('is-active');
                 currentSpeakBtn = null;
-                if (failed) setStatus('朗讀失敗', 'error'); else setIdleStatus();
+                if (failed) { synth.cancel(); setStatus('朗讀失敗', 'error'); } else setIdleStatus();
             };
-            u.onend = () => done(false);
-            u.onerror = (e) => done(e.error !== 'canceled' && e.error !== 'interrupted');
-            synth.speak(u);
+            const chunks = splitForSpeech(text);
+            chunks.forEach((chunk, i) => {
+                const u = new SpeechSynthesisUtterance(chunk);
+                u.lang = LANGS[langKey].speech;
+                if (i === chunks.length - 1) u.onend = () => done(false);
+                u.onerror = (e) => { if (e.error !== 'canceled' && e.error !== 'interrupted') done(true); };
+                session.utterances.push(u);
+                synth.speak(u);   // 瀏覽器會依序排隊播放
+            });
         }
 
         async function copyText(text) {
@@ -1221,8 +1272,16 @@
             }
         }
 
+        /** 不開麥克風串流的示意波形（純動畫），用在不能同時開兩條麥克風的裝置 */
+        function startFakeMeter(role) {
+            meterToken++;
+            el.meter.dataset.role = role;
+            el.meter.classList.add('is-fake');
+        }
+
         function stopMeter() {
             meterToken++;
+            el.meter.classList.remove('is-fake');
             delete el.meter.dataset.role;
             if (meterRes) {
                 cancelAnimationFrame(meterRes.raf);
@@ -1236,7 +1295,10 @@
         // ============================================================
         //  語音模式
         // ============================================================
-        let activeRec = null;      // 目前的辨識器
+        const IS_ANDROID = /Android/i.test(navigator.userAgent);
+        /** 把兩段聽到的文字接起來：英文中間補空白，中日文直接相連 */
+        const joinSpeech = (a, b, lang) => (!a ? b : !b ? a : lang === 'en' ? `${a.trimEnd()} ${b.trimStart()}` : a + b);
+        let activeRec = null;      // 目前的聆聽（有 stop() 的物件）
         let activeBtn = null;
         let beepCtx = null;
 
@@ -1289,17 +1351,17 @@
             const to = role === 'me' ? state.other : 'zh';
             const who = role === 'me' ? '我' : '對方';
 
-            const rec = new SpeechRecognition();
-            rec.lang = localTag ?? LANGS[from].rec;
-            if (localTag) rec.processLocally = true;
-            rec.interimResults = true;
-            rec.continuous = true;
-            rec.maxAlternatives = 1;
-
             const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${localTag ? ' · 離線' : ''}` });
             bubble.setPlaceholder('正在聆聽…');
 
+            // 辨識器遇到停頓或時間上限會自己結束。使用者沒按結束前，就接著開下一段繼續聽，
+            // 長句才不會被從中截斷。carried 是前幾段已經聽到的文字。
+            let rec = null;
+            let carried = '';
+            let sessionText = '';
             let heard = '';
+            let userStopped = false;
+            let silentSessions = 0;   // 連續幾段都沒聽到東西；用來避免沒人說話時無止盡地重開
             let recError = '';
             let ended = false;
             let liveTimer = 0;
@@ -1318,10 +1380,16 @@
                     hasPreview = true;
                     bubble.setPending(partial);
                 };
+                // 第一次預覽邊翻邊顯示；之後的預覽等整段翻完才換上去。
+                // 否則每次重翻，畫面上的譯文都會從頭重新跑字，句子越長越閃。
+                const streamInto = hasPreview ? null : show;
                 // 離線（裝置端辨識）時，預覽也用裝置端翻譯
                 const job = localTag
                     ? { promise: translateOnDevice(text, to, from).then(show), abort() {} }
-                    : streamClaude(textContent(text, to), show);
+                    : (() => {
+                        const stream = streamClaude(textContent(text, to), streamInto);
+                        return { promise: stream.promise.then(show), abort: stream.abort };
+                    })();
                 liveJob = job;
                 try { await job.promise; }
                 catch { /* 預覽失敗不提示，最終翻譯才處理錯誤 */ }
@@ -1350,38 +1418,83 @@
                 }
             }
 
-            rec.onstart = () => {
-                btn.classList.add('is-recording');
-                el.voiceHint.textContent = '聆聽中… 再點一下結束';
-                setStatus(`聆聽${LANGS[from].label}`, 'listening');
+            // 交給外部（按鈕、切換模式）用來結束這次聆聽的把手
+            const session = {
+                stop() {
+                    userStopped = true;
+                    try { rec?.stop(); } catch { finish(); }
+                },
             };
 
-            rec.onresult = (event) => {
-                let finalText = '';
-                let interimText = '';
-                for (const result of event.results) {
-                    if (result.isFinal) finalText += result[0].transcript;
-                    else interimText += result[0].transcript;
-                }
-                heard = finalText + interimText;
-                if (!heard) return;
-                bubble.setSource(finalText, interimText);
-                if (state.live) {
-                    clearTimeout(liveTimer);
-                    const snapshot = heard.trim();
-                    if (snapshot.length >= 2) liveTimer = setTimeout(() => runLive(snapshot), LIVE_DEBOUNCE_MS);
-                }
-            };
+            function openRecognizer() {
+                const r = new SpeechRecognition();
+                r.lang = localTag ?? LANGS[from].rec;
+                if (localTag) r.processLocally = true;
+                r.interimResults = true;
+                r.continuous = true;
+                r.maxAlternatives = 1;
 
-            rec.onerror = (e) => { recError = e.error; };
+                r.onstart = () => {
+                    btn.classList.add('is-recording');
+                    el.voiceHint.textContent = '聆聽中… 再點一下結束';
+                    setStatus(`聆聽${LANGS[from].label}`, 'listening');
+                };
 
-            // onerror 之後一定會接 onend，收尾統一在這裡做
-            rec.onend = () => {
+                r.onresult = (event) => {
+                    let finalText = '';
+                    let interimText = '';
+                    for (const result of event.results) {
+                        const piece = result[0].transcript;
+                        if (!result.isFinal) { interimText += piece; continue; }
+                        // Android 的連續模式會把「到目前為止的整段」重複放進每一筆結果，
+                        // 直接相加會出現重複字句；新的一筆若以已有文字開頭，就視為取代而不是追加
+                        const cumulative = IS_ANDROID && finalText.trim() && piece.trim().startsWith(finalText.trim());
+                        finalText = cumulative ? piece : finalText + piece;
+                    }
+                    if (IS_ANDROID && finalText.trim() && interimText.trim().startsWith(finalText.trim())) {
+                        interimText = interimText.trim().slice(finalText.trim().length);
+                    }
+                    sessionText = finalText + interimText;
+                    heard = joinSpeech(carried, sessionText, from);
+                    if (!heard) return;
+                    bubble.setSource(joinSpeech(carried, finalText, from), interimText);
+                    if (state.live) {
+                        clearTimeout(liveTimer);
+                        const snapshot = heard.trim();
+                        if (snapshot.length >= 2) liveTimer = setTimeout(() => runLive(snapshot), LIVE_DEBOUNCE_MS);
+                    }
+                };
+
+                r.onerror = (e) => { recError = e.error; };
+
+                // onerror 之後一定會接 onend，收尾統一在這裡做
+                r.onend = () => {
+                    if (rec !== r) return;
+                    silentSessions = sessionText.trim() ? 0 : silentSessions + 1;
+                    const fatal = ['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported', 'aborted'].includes(recError);
+                    // 不是使用者按的結束、也不是無法繼續的錯誤：接著聽下一段。
+                    // 連續兩段都沒聲音就不再重開，避免沒人說話時麥克風一直開著。
+                    if (!userStopped && !fatal && silentSessions < 2 && activeRec === session) {
+                        carried = joinSpeech(carried, sessionText.trim(), from);
+                        sessionText = '';
+                        recError = '';
+                        try { openRecognizer(); return; }
+                        catch (e) { console.warn('無法接續聆聽：', e); }
+                    }
+                    finish();
+                };
+
+                rec = r;
+                r.start();
+            }
+
+            function finish() {
+                if (ended) return;
                 ended = true;
                 clearTimeout(liveTimer);
                 btn.classList.remove('is-recording');
-                // 只有自己仍是目前的辨識器才重設共用狀態，避免舊 session 的事件蓋掉新的
-                if (activeRec === rec) {
+                // 只有自己仍是目前的聆聽才重設共用狀態，避免舊的事件蓋掉新的
+                if (activeRec === session) {
                     activeRec = null;
                     activeBtn = null;
                     stopMeter();
@@ -1410,14 +1523,15 @@
                 } else {
                     setIdleStatus();
                 }
-            };
+            }
 
-            activeRec = rec;
+            activeRec = session;
             activeBtn = btn;
             playBeep();
-            startMeter(role);
+            // Android 上語音辨識與另一條麥克風串流無法共用，硬開波形可能讓辨識提早中斷，改用示意動畫
+            if (IS_ANDROID) startFakeMeter(role); else startMeter(role);
             try {
-                rec.start();
+                openRecognizer();
             } catch (e) {
                 console.error(e);
                 activeRec = null;
@@ -1798,7 +1912,7 @@
                 const { data, mediaType } = await prepareImage(file, objectUrl);
                 const content = [
                     { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-                    { type: 'text', text: IMAGE_PROMPT(LANGS[to].prompt) },
+                    { type: 'text', text: IMAGE_PROMPT(LANGS[to].prompt) + glossaryNote() },
                 ];
                 const result = await streamClaude(content, (partial) => bubble.setPending(partial)).promise;
                 bubble.finalize(result, to);
@@ -1848,6 +1962,7 @@
             el.apiKey.value = state.apiKey;
             el.modelSelect.value = state.model;
             el.liveToggle.checked = state.live;
+            $('glossaryInput').value = store.get('tm_glossary', '');
             el.modal.hidden = false;
             refreshOfflineStatus();
             if (!state.apiKey) el.apiKey.focus();
@@ -1857,7 +1972,11 @@
         function saveSettings(event) {
             event.preventDefault();
             const key = el.apiKey.value.trim();
-            if (!key) { toast('請貼上 API Key'); el.apiKey.focus(); return; }
+            // 詞彙與離線設定不需要 Key，離線或還沒有 Key 時也要能儲存
+            const glossaryRaw = $('glossaryInput').value;
+            customGlossary = parseGlossary(glossaryRaw);
+            store.set('tm_glossary', glossaryRaw);
+            if (!key && navigator.onLine && !state.apiKey) { toast('請貼上 API Key'); el.apiKey.focus(); return; }
             state.apiKey = key;
             state.model = pick(el.modelSelect.value, MODELS, MODELS[0]);
             state.live = el.liveToggle.checked;
