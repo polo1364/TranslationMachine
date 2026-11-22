@@ -1254,9 +1254,69 @@
             return node;
         }
 
-        function createBubble({ side, tag, imageUrl = null }) {
+        // ---------- 對話歷史（存在這台裝置上，按垃圾桶才清空） ----------
+        // 每一則翻譯完成的訊息都存進 localStorage，重新開啟 App 時還原。
+        // 只存在本機瀏覽器，不會上傳；圖片只留一張小縮圖。
+        const HISTORY_KEY = 'tm_history';
+        const HISTORY_MAX = 300;
+        let historyItems = [];
+        try { historyItems = JSON.parse(store.get(HISTORY_KEY, '[]')) || []; } catch { historyItems = []; }
+        let bubbleSeq = 0;
+
+        function saveHistory() {
+            if (historyItems.length > HISTORY_MAX) historyItems = historyItems.slice(-HISTORY_MAX);
+            // 空間不夠時（多半是縮圖累積太多）丟掉最舊的一批再試
+            for (let attempt = 0; attempt < 6; attempt++) {
+                try {
+                    localStorage.setItem(HISTORY_KEY, JSON.stringify(historyItems));
+                    return;
+                } catch (e) {
+                    if (historyItems.length <= 1) { diag(`歷史訊息無法儲存：${e.name}`); return; }
+                    historyItems = historyItems.slice(Math.ceil(historyItems.length / 5));
+                }
+            }
+        }
+
+        function rememberBubble(record) {
+            const i = historyItems.findIndex((r) => r.id === record.id);
+            if (i >= 0) historyItems[i] = record; else historyItems.push(record);
+            historyItems.sort((a, b) => a.id - b.id);   // 依訊息出現的順序，不是翻完的順序
+            saveHistory();
+        }
+
+        /** 圖片訊息只存小縮圖，原圖不存（太佔空間） */
+        async function makeThumbnail(objectUrl) {
+            try {
+                const img = await loadImage(objectUrl);
+                const scale = Math.min(1, 240 / Math.max(img.naturalWidth, img.naturalHeight));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+                canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                return canvas.toDataURL('image/jpeg', 0.6);
+            } catch {
+                return null;
+            }
+        }
+
+        function restoreHistory() {
+            for (const r of historyItems) {
+                const bubble = createBubble({ side: r.side, tag: r.tag, imageUrl: r.img || null, restored: r });
+                if (r.src) bubble.setSource(r.src);
+                bubble.finalize(r.dst, r.lang);
+            }
+        }
+
+        function createBubble({ side, tag, imageUrl = null, restored = null }) {
             el.empty.hidden = true;
+            // 訊息的編號：新訊息用時間加序號，確保晚建立的排在後面；還原的沿用原本的編號
+            const id = restored?.id ?? Date.now() * 1000 + (bubbleSeq++ % 1000);
+            let thumbnail = restored?.img ?? null;
             const root = make('article', `msg msg--${side}`);
+            if (restored) root.style.animation = 'none';
             root.append(make('div', 'msg__tag', tag));
             if (imageUrl) {
                 const img = make('img', 'msg__img');
@@ -1327,8 +1387,15 @@
                     actions.replaceChildren(btnSpeak, btnCopy);
                     actions.hidden = false;
                     scrollToBottom();
+                    // 翻完的訊息存起來；還原出來的不必再存一次
+                    if (!restored) {
+                        const hasSource = !src.hidden && !src.classList.contains('is-placeholder');
+                        rememberBubble({ id, side, tag, src: hasSource ? src.textContent : '', dst: text, lang: langKey, img: thumbnail });
+                    }
                     return btnSpeak;
                 },
+                /** 圖片訊息：設定要存進歷史的縮圖（要在 finalize 之前呼叫） */
+                setThumbnail(dataUrl) { thumbnail = dataUrl; },
                 fail(message) {
                     dst.hidden = false;
                     dst.classList.remove('is-typing');
@@ -1347,6 +1414,8 @@
             if (!el.screen.querySelector('.msg')) return;
             if (!confirm('確定要清除所有對話嗎？')) return;
             conversation.length = 0;   // 上下文也一併清掉，新對話不受舊內容影響
+            historyItems = [];         // 存在裝置上的歷史訊息也清空
+            try { localStorage.removeItem(HISTORY_KEY); } catch { /* 忽略 */ }
             stopSpeaking();
             el.screen.querySelectorAll('.msg').forEach((n) => n.remove());
             objectUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
@@ -2334,6 +2403,7 @@
             const objectUrl = URL.createObjectURL(file);
             objectUrls.push(objectUrl);   // 清除對話時才釋放，圖片預覽才不會失效
             const bubble = createBubble({ side: 'me', tag: `圖片 → ${LANGS[to].label}${offline ? ' · 離線' : ''}`, imageUrl: objectUrl });
+            makeThumbnail(objectUrl).then((thumb) => bubble.setThumbnail(thumb));   // 歷史訊息只留縮圖
             bubble.setPending('');
             setStatus('圖片翻譯中', 'busy');
             if (offline) {
@@ -2524,6 +2594,7 @@
         });
 
         renderControls();
+        restoreHistory();   // 把上次留下的訊息放回畫面
         setIdleStatus();
         if (!state.apiKey && navigator.onLine) openSettings();   // 離線時不需要 Key，不打擾
 
@@ -2534,7 +2605,8 @@
             const ensureIsolation = () => {
                 if (!wantsIsolation()) return false;   // 只用連線翻譯時不需要隔離
                 if (self.crossOriginIsolated || !navigator.serviceWorker.controller) return false;
-                if (el.screen.querySelector('.msg') || el.apiKey.value || !navigator.onLine) return false;   // 不打斷使用中的畫面
+                // 不打斷正在進行的事。畫面上有歷史訊息沒關係，重新載入後會還原
+                if (activeRec || el.status.dataset.state === 'busy' || el.apiKey.value || !navigator.onLine) return false;
                 try {
                     if (sessionStorage.getItem('tm_coi')) return false;   // 只試一次，避免不支援時無限重整
                     sessionStorage.setItem('tm_coi', '1');
