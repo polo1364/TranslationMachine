@@ -716,9 +716,32 @@
 
         /** 連續聆聽時是一段一段翻的；把前面幾段原文附上當上下文，代名詞、省略的主詞才翻得對 */
         const contextNote = (context) => (context.length
-            ? `\nEarlier in the same speech, for context only — do not translate it again:\n<context>\n${context.join('\n')}\n</context>\n`
-              + 'The source below continues from it and may be a fragment of a sentence; translate only the source.\n'
+            ? '\nWhat was said earlier in this conversation, in the original languages. It is context only — do not translate it again.\n'
+              + 'Use it to resolve what the source refers to (what "this" or "here" means, which item is being counted, who is being addressed) '
+              + `and to pick fitting words and counters:\n<context>\n${context.join('\n')}\n</context>\n`
+              + 'The source below is what is said next. It may continue the last line and may be a fragment of a sentence; translate only the source.\n'
             : '');
+
+        // ---------- 對話紀錄（給翻譯當上下文） ----------
+        // 每按一次按鈕是獨立翻一次，模型看不到前面講過什麼，就會把「在這裡」（遞護照）翻成地點、
+        // 把「三本」翻成「三個」而不是「三瓶」。所以記下最近幾句雙方的原文，翻譯時一併附上。
+        // 只留在記憶體裡，清除對話時一起清掉。
+        const SPEAKER_LABEL = { me: 'Traveller', other: 'Local person' };
+        const LANG_LABEL = { zh: 'Chinese', ja: 'Japanese', en: 'English' };
+        const conversation = [];   // { role, lang, text }
+        const speakerLine = (role, lang, text) => `${SPEAKER_LABEL[role]} (${LANG_LABEL[lang]}): ${text}`;
+        function rememberTurn(role, lang, text) {
+            if (!text.trim()) return;
+            conversation.push({ role, lang, text: text.trim() });
+            if (conversation.length > 8) conversation.shift();
+        }
+        /** 最近幾句對話；extra 是同一次聆聽裡已經說過的段落 */
+        function conversationContext(role, lang, extra = []) {
+            return [
+                ...conversation.slice(-6).map((t) => speakerLine(t.role, t.lang, t.text)),
+                ...extra.map((text) => speakerLine(role, lang, text)),
+            ];
+        }
 
         const textContent = (text, targetKey, context = []) => [{
             type: 'text',
@@ -1307,6 +1330,7 @@
         function clearConversation() {
             if (!el.screen.querySelector('.msg')) return;
             if (!confirm('確定要清除所有對話嗎？')) return;
+            conversation.length = 0;   // 上下文也一併清掉，新對話不受舊內容影響
             stopSpeaking();
             el.screen.querySelectorAll('.msg').forEach((n) => n.remove());
             objectUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
@@ -1603,7 +1627,7 @@
                 if (s.liveJob) { s.liveQueued = text; return; }   // 同時間只跑一個預覽請求
                 if (text === s.lastLiveText) return;
                 s.lastLiveText = text;
-                const context = parts.slice(-3).map((p) => p.src);
+                const context = conversationContext(role, from, parts.slice(-3).map((p) => p.src));
                 const show = (partial) => {
                     if (s.closed || s.liveJob !== job) return;
                     s.preview = partial;
@@ -1643,7 +1667,7 @@
             // ---- 一段說完：送出正式翻譯 ----
             async function translateSegment(s) {
                 const text = s.text.trim();
-                const context = parts.slice(-3).map((p) => p.src);
+                const context = conversationContext(role, from, parts.slice(-3).map((p) => p.src));
                 const part = { src: text, dst: null, preview: s.preview };
                 parts.push(part);
                 pending++;
@@ -1682,6 +1706,7 @@
             function settle() {
                 if (!ended || pending > 0 || !parts.length) return;
                 bubble.setSource(parts.map((p) => p.src).join(SRC_GAP));
+                rememberTurn(role, from, parts.map((p) => p.src).join(SRC_GAP));   // 給之後的句子當上下文
                 // 整段結束了，最後一句即使聽起來沒講完也補上句尾
                 const full = endSentence(parts.map((p) => p.dst).join(DST_GAP), to);
                 const btnSpeak = bubble.finalize(full, to);
@@ -2091,10 +2116,10 @@
             // 連線時：語音由 App 內建模型辨識，翻譯仍交給 Claude（較準）。離線時兩者都在裝置上做。
             const online = navigator.onLine && !!state.apiKey;
             const translatePreview = (text) => (online
-                ? streamClaude(textContent(text, to), null, previewOptions()).promise
+                ? streamClaude(textContent(text, to, conversationContext(role, from)), null, previewOptions()).promise
                 : translateOnDevice(text, to, from));
             const translateFinal = (text, onText) => (online
-                ? streamClaude(textContent(text, to), onText).promise
+                ? streamClaude(textContent(text, to, conversationContext(role, from)), onText).promise
                 : translateOnDevice(text, to, from));
 
             const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${online ? '' : ' · 離線'}` });
@@ -2177,6 +2202,7 @@
                     setStatus(online ? '翻譯中' : '離線翻譯中', 'busy');
                     const result = await translateFinal(text, (partial) => bubble.setPending(partial));
                     const btnSpeak = bubble.finalize(result, to);
+                    rememberTurn(role, from, text);
                     setIdleStatus();
                     speak(result, to, btnSpeak);
                 } catch (err) {
