@@ -465,6 +465,7 @@
                 <button class="btn" type="button" id="btnOfflineDownload" hidden>下載語音與圖片辨識資源</button>
                 <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 216 MB）</button>
                 <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 242 MB）</button>
+                <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型（約 130 MB）</button>
             </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
@@ -698,13 +699,14 @@
         const MODEL_PACKS = {
             zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 216 MB' },
             jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 242 MB' },
+            asr: { label: '語音辨識', keys: ['asr'], size: '約 130 MB' },   // Whisper，給沒有裝置端語音辨識的瀏覽器（手機）
         };
         const modelKeysReady = new Set(JSON.parse(store.get('tm_models', '[]')));
         let mtWorker = null;
         let mtSeq = 0;
         const mtPending = new Map();
 
-        function mtCall(message, onProgress) {
+        function mtCall(message, onProgress, transfer = []) {
             if (!mtWorker) {
                 mtWorker = new Worker('offline-translate-worker.js', { type: 'module' });
                 mtWorker.onmessage = ({ data }) => {
@@ -726,7 +728,7 @@
             return new Promise((resolve, reject) => {
                 const id = ++mtSeq;
                 mtPending.set(id, { resolve, reject, onProgress });
-                mtWorker.postMessage({ ...message, id });
+                mtWorker.postMessage({ ...message, id }, transfer);
             });
         }
 
@@ -899,6 +901,7 @@
             // 內建模型（手機可用）
             const packReady = (id) => MODEL_PACKS[id].keys.every((k) => modelKeysReady.has(k));
             lines.push(`翻譯模型：中英${packReady('zhen') ? '已就緒' : '未下載'}、日英${packReady('jaen') ? '已就緒' : '未下載'}（中日互譯需兩組）`);
+            lines.push(`語音辨識模型：${packReady('asr') ? '已就緒' : '未下載'}`);
             for (const id of Object.keys(MODEL_PACKS)) {
                 const b = $(`btnModel-${id}`);
                 if (!b.disabled) b.hidden = packReady(id);
@@ -919,7 +922,7 @@
 
             // 語音
             if (!speechLocalSupported) {
-                lines.push('語音：此瀏覽器不支援裝置端語音辨識');
+                lines.push('瀏覽器內建語音辨識：不支援（離線時改用語音辨識模型）');
             } else {
                 await refreshLocalSpeech();
                 const parts = Object.keys(SPEECH_TAGS).map((k) => {
@@ -927,7 +930,7 @@
                     if (s !== 'available' && s !== 'unavailable') canDownload = true;
                     return `${LANGS[k].label}${s === 'available' ? '已就緒' : s === 'unavailable' ? '不支援' : '未下載'}`;
                 });
-                lines.push(`語音：${parts.join('、')}`);
+                lines.push(`瀏覽器內建語音辨識：${parts.join('、')}`);
             }
 
             // 圖片
@@ -1157,21 +1160,22 @@
         let meterToken = 0;
         let meterRes = null;   // { stream, ctx, raf }
 
-        async function startMeter(role) {
+        /** sharedStream：已經開好的麥克風串流（離線錄音時共用），由呼叫端負責關閉 */
+        async function startMeter(role, sharedStream = null) {
             const token = ++meterToken;
             el.meter.dataset.role = role;
-            if (!navigator.mediaDevices?.getUserMedia) return;
+            if (!sharedStream && !navigator.mediaDevices?.getUserMedia) return;
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const stream = sharedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
                 // 取得麥克風前使用者已停止錄音 → 立刻釋放，否則麥克風會一直開著
-                if (token !== meterToken) { stream.getTracks().forEach((t) => t.stop()); return; }
+                if (token !== meterToken) { if (!sharedStream) stream.getTracks().forEach((t) => t.stop()); return; }
                 const ctx = new (window.AudioContext || window.webkitAudioContext)();
                 const analyser = ctx.createAnalyser();
                 analyser.fftSize = 128;
                 analyser.smoothingTimeConstant = 0.75;
                 ctx.createMediaStreamSource(stream).connect(analyser);
                 const data = new Uint8Array(analyser.frequencyBinCount);
-                const res = { stream, ctx, raf: 0 };
+                const res = { stream, ctx, raf: 0, ownsStream: !sharedStream };
                 meterRes = res;
                 const half = METER_BARS / 2;
                 const draw = () => {
@@ -1195,7 +1199,7 @@
             delete el.meter.dataset.role;
             if (meterRes) {
                 cancelAnimationFrame(meterRes.raf);
-                meterRes.stream.getTracks().forEach((t) => t.stop());
+                if (meterRes.ownsStream) meterRes.stream.getTracks().forEach((t) => t.stop());
                 meterRes.ctx.close().catch(() => {});
                 meterRes = null;
             }
@@ -1238,12 +1242,14 @@
                 // 離線：改用裝置端語音辨識＋裝置端翻譯
                 const from = role === 'me' ? 'zh' : state.other;
                 const local = localSpeech[from];
-                if (local?.state !== 'available') {
+                if (local?.state === 'available') {
+                    startRecording(role, btn, local.tag);
+                } else if (modelKeysReady.has('asr') && window.MediaRecorder && navigator.mediaDevices?.getUserMedia) {
+                    startModelRecording(role, btn);   // 瀏覽器沒有裝置端語音辨識（手機）：錄音後交給 Whisper 模型
+                } else {
                     setStatus('離線中', 'offline');
-                    toast(speechLocalSupported ? `離線${LANGS[from].label}語音尚未下載，請連線後到設定下載` : '此瀏覽器不支援離線語音辨識');
-                    return;
+                    toast('離線語音辨識尚未下載，請連線後到設定下載');
                 }
-                startRecording(role, btn, local.tag);
                 return;
             }
             if (!state.apiKey) { openSettings(); return; }
@@ -1389,6 +1395,101 @@
                 bubble.remove();
                 setStatus('無法啟動語音辨識', 'error');
             }
+        }
+
+        // ---------- 離線錄音＋Whisper 模型辨識（手機用） ----------
+        const MODEL_REC_MAX_MS = 60000;   // 單次錄音上限，避免手機辨識過久或記憶體不足
+
+        /** 把錄音檔解碼成 Whisper 需要的 16 kHz 單聲道 PCM */
+        async function decodeTo16k(blob) {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            try {
+                const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+                if (buffer.numberOfChannels === 1) return buffer.getChannelData(0).slice();
+                const mono = new Float32Array(buffer.length);
+                for (let c = 0; c < buffer.numberOfChannels; c++) {
+                    const data = buffer.getChannelData(c);
+                    for (let i = 0; i < data.length; i++) mono[i] += data[i] / buffer.numberOfChannels;
+                }
+                return mono;
+            } finally {
+                ctx.close().catch(() => {});
+            }
+        }
+
+        async function startModelRecording(role, btn) {
+            const from = role === 'me' ? 'zh' : state.other;
+            const to = role === 'me' ? state.other : 'zh';
+            const who = role === 'me' ? '我' : '對方';
+
+            // 先佔住「錄音中」狀態，避免等麥克風授權時被重複點擊
+            let cancelled = false;
+            const session = { stop() { cancelled = true; } };
+            activeRec = session;
+            activeBtn = btn;
+
+            const release = () => {
+                if (activeRec !== session) return;
+                activeRec = null;
+                activeBtn = null;
+                stopMeter();
+                btn.classList.remove('is-recording');
+                el.voiceHint.textContent = '點一下開始說話，再點一下結束';
+            };
+
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch {
+                release();
+                setStatus('麥克風未授權', 'error');
+                toast('請允許此網站使用麥克風');
+                return;
+            }
+            const stopStream = () => stream.getTracks().forEach((t) => t.stop());
+            if (cancelled) { stopStream(); release(); setIdleStatus(); return; }
+
+            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label} · 離線` });
+            bubble.setPlaceholder('正在錄音…');
+
+            const recorder = new MediaRecorder(stream);
+            const chunks = [];
+            recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+            const autoStop = setTimeout(() => session.stop(), MODEL_REC_MAX_MS);
+            session.stop = () => { if (recorder.state !== 'inactive') recorder.stop(); };
+
+            recorder.onstop = async () => {
+                clearTimeout(autoStop);
+                stopStream();
+                release();
+                try {
+                    const audio = await decodeTo16k(new Blob(chunks, { type: recorder.mimeType }));
+                    if (audio.length < 16000 * 0.4) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
+                    setStatus('辨識語音中', 'busy');
+                    bubble.setPlaceholder('辨識語音中…');
+                    const text = await mtCall({ type: 'transcribe', audio, lang: from, offline: !navigator.onLine }, null, [audio.buffer]);
+                    if (!text) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
+                    bubble.setSource(text);
+                    bubble.setPending('');
+                    setStatus('離線翻譯中', 'busy');
+                    const result = await translateOnDevice(text, to, from);
+                    const btnSpeak = bubble.finalize(result, to);
+                    setIdleStatus();
+                    speak(result, to, btnSpeak);
+                } catch (err) {
+                    const msg = err instanceof UserFacingError ? err.message : '離線語音辨識失敗';
+                    if (!(err instanceof UserFacingError)) console.error(err);
+                    bubble.fail(msg);
+                    setStatus(msg, 'error');
+                }
+            };
+
+            playBeep();
+            startMeter(role, stream);
+            btn.classList.add('is-recording');
+            el.voiceHint.textContent = '錄音中… 再點一下結束';
+            setStatus(`錄音中（${LANGS[from].label}）`, 'listening');
+            recorder.start();
         }
 
         function stopRecordingIfAny() {

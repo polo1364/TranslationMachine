@@ -10,7 +10,12 @@ const MODELS = {
     'ja>en': 'Xenova/opus-mt-ja-en',
     'en>ja': 'Kadonox/fugumt-en-ja-onnx',
 };
-const MAX_LOADED = 2;   // 同時留在記憶體的模型數，避免手機記憶體不足
+const MAX_LOADED = 2;   // 同時留在記憶體的翻譯模型數，避免手機記憶體不足
+
+// 語音辨識：Whisper base 多語言版。編碼器維持原精度（量化後辨識率掉很多），解碼器用 8 位元量化。
+const ASR_MODEL = 'Xenova/whisper-base';
+const ASR_DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q8' };
+const ASR_LANG = { zh: 'chinese', ja: 'japanese', en: 'english' };
 
 // 中文模型以簡體訓練：輸入先轉簡體，輸出再轉回臺灣繁體與用語
 const toSimplified = OpenCC.Converter({ from: 'tw', to: 'cn' });
@@ -69,6 +74,37 @@ async function getPipe(key, onProgress) {
     return p;
 }
 
+/** 把各檔案的下載進度合併成 0~1 */
+function progressTracker(onProgress) {
+    const files = new Map();
+    return (e) => {
+        if (!onProgress || e.status !== 'progress' || !e.total) return;
+        files.set(e.file, [e.loaded, e.total]);
+        let done = 0, total = 0;
+        for (const [l, t] of files.values()) { done += l; total += t; }
+        onProgress(done / total);
+    };
+}
+
+let asrPipe = null;   // 語音模型獨立保留，不佔翻譯模型的名額
+function getAsr(onProgress) {
+    asrPipe ??= pipeline('automatic-speech-recognition', ASR_MODEL, {
+        dtype: ASR_DTYPE,
+        device: 'wasm',
+        progress_callback: progressTracker(onProgress),
+    }).catch((err) => { asrPipe = null; throw err; });
+    return asrPipe;
+}
+
+/** audio：16 kHz 單聲道 Float32Array */
+async function transcribe(audio, lang) {
+    const asr = await getAsr();
+    const out = await asr(audio, { language: ASR_LANG[lang], task: 'transcribe', chunk_length_s: 30 });
+    const text = (out.text ?? '').trim();
+    // Whisper 的中文可能輸出簡體，統一轉成臺灣繁體
+    return lang === 'zh' ? toTraditional(text) : text;
+}
+
 function route(from, to) {
     if (MODELS[`${from}>${to}`]) return [`${from}>${to}`];
     return [`${from}>en`, `en>${to}`];
@@ -110,10 +146,14 @@ async function handle(data) {
         if (type === 'download') {
             // 逐一載入以觸發下載與快取
             for (let i = 0; i < data.keys.length; i++) {
-                await getPipe(data.keys[i], (p) => self.postMessage({ id, type: 'progress', value: (i + p) / data.keys.length }));
-                self.postMessage({ id, type: 'progress', value: (i + 1) / data.keys.length });
+                const report = (p) => self.postMessage({ id, type: 'progress', value: (i + p) / data.keys.length });
+                if (data.keys[i] === 'asr') await getAsr(report);
+                else await getPipe(data.keys[i], report);
+                report(1);
             }
             self.postMessage({ id, type: 'done' });
+        } else if (type === 'transcribe') {
+            self.postMessage({ id, type: 'done', result: await transcribe(data.audio, data.lang) });
         } else if (type === 'translate') {
             self.postMessage({ id, type: 'done', result: await translate(data.text, data.from, data.to) });
         }
