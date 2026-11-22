@@ -17,9 +17,13 @@ const MT_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'fp16' };
 const MT_DTYPE_OVERRIDE = { 'en>ja': { encoder_model: 'q8', decoder_model_merged: 'fp32' } };
 const MAX_LOADED = 2;   // 同時留在記憶體的翻譯模型數，避免手機記憶體不足
 
-// 語音辨識：Whisper base 多語言版。編碼器維持原精度（量化後辨識率掉很多），解碼器用 8 位元量化。
-const ASR_MODEL = 'Xenova/whisper-base';
-const ASR_DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q8' };
+// 語音辨識：Whisper 多語言版，兩種大小。
+// 實測同一段日語：base 有四處錯字，small 幾乎全對；中文 base 會把「我想買」聽成「我向買」，small 正確。
+// 代價是 small 的辨識時間約為 base 的兩倍。兩者用 8 位元量化的辨識結果都與較高精度相同。
+const ASR_MODELS = {
+    'asr': { id: 'Xenova/whisper-base', dtype: { encoder_model: 'fp32', decoder_model_merged: 'q8' } },
+    'asr-small': { id: 'Xenova/whisper-small', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' } },
+};
 const ASR_LANG = { zh: 'chinese', ja: 'japanese', en: 'english' };
 
 // 中文模型以簡體訓練：輸入先轉簡體，輸出再轉回臺灣繁體與用語
@@ -84,23 +88,29 @@ function progressTracker(onProgress) {
     };
 }
 
-let asrPipe = null;   // 語音模型獨立保留，不佔翻譯模型的名額
-function getAsr(onProgress) {
-    asrPipe ??= pipeline('automatic-speech-recognition', ASR_MODEL, {
-        dtype: ASR_DTYPE,
-        device: 'wasm',
-        progress_callback: progressTracker(onProgress),
-    }).catch((err) => { asrPipe = null; throw err; });
+// 語音模型獨立保留，不佔翻譯模型的名額；同時間只留一個在記憶體
+let asrKey = null;
+let asrPipe = null;
+function getAsr(key, onProgress) {
+    if (asrKey !== key) {
+        asrPipe?.then((p) => p.dispose?.()).catch(() => {});
+        asrKey = key;
+        asrPipe = pipeline('automatic-speech-recognition', ASR_MODELS[key].id, {
+            dtype: ASR_MODELS[key].dtype,
+            device: 'wasm',
+            progress_callback: progressTracker(onProgress),
+        }).catch((err) => { if (asrKey === key) { asrKey = null; asrPipe = null; } throw err; });
+    }
     return asrPipe;
 }
 
 /** audio：16 kHz 單聲道 Float32Array */
-async function transcribe(audio, lang) {
-    const asr = await getAsr();
+async function transcribe(audio, lang, key) {
+    const asr = await getAsr(key);
     const out = await asr(audio, { language: ASR_LANG[lang], task: 'transcribe', chunk_length_s: 30 });
     const text = (out.text ?? '').trim();
-    // Whisper 的中文可能輸出簡體，統一轉成臺灣繁體
-    return lang === 'zh' ? toTraditional(text) : text;
+    // Whisper 的中文可能輸出簡體、標點是半形，統一轉成臺灣繁體與全形標點
+    return fixPunctuation(lang === 'zh' ? toTraditional(text) : text, lang);
 }
 
 function route(from, to) {
@@ -186,14 +196,14 @@ async function handle(data) {
             // 逐一載入以觸發下載與快取
             for (let i = 0; i < data.keys.length; i++) {
                 const report = (p) => self.postMessage({ id, type: 'progress', value: (i + p) / data.keys.length });
-                if (data.keys[i] === 'asr') await getAsr(report);
+                if (ASR_MODELS[data.keys[i]]) await getAsr(data.keys[i], report);
                 else await getPipe(data.keys[i], report);
                 report(1);
             }
             await dropStaleFiles();
             self.postMessage({ id, type: 'done' });
         } else if (type === 'transcribe') {
-            self.postMessage({ id, type: 'done', result: await transcribe(data.audio, data.lang) });
+            self.postMessage({ id, type: 'done', result: await transcribe(data.audio, data.lang, data.model) });
         } else if (type === 'translate') {
             self.postMessage({ id, type: 'done', result: await translate(data.text, data.from, data.to) });
         }

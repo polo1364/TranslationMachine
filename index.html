@@ -465,7 +465,8 @@
                 <button class="btn" type="button" id="btnOfflineDownload" hidden>下載語音與圖片辨識資源</button>
                 <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 326 MB）</button>
                 <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 351 MB）</button>
-                <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型（約 130 MB）</button>
+                <button class="btn" type="button" id="btnModel-asrSmall" hidden>下載語音辨識模型・高準確（約 238 MB，辨識較慢）</button>
+                <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型・標準（約 130 MB，較快）</button>
             </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
@@ -699,8 +700,11 @@
         const MODEL_PACKS = {
             zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 326 MB' },
             jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 351 MB' },
-            asr: { label: '語音辨識', keys: ['asr'], size: '約 130 MB' },   // Whisper，給沒有裝置端語音辨識的瀏覽器（手機）
+            // Whisper，給沒有裝置端語音辨識的瀏覽器（手機）。兩種擇一即可，都有時優先用高準確
+            asr: { label: '語音辨識（標準）', keys: ['asr'], size: '約 130 MB' },
+            asrSmall: { label: '語音辨識（高準確）', keys: ['asr-small'], size: '約 238 MB' },
         };
+        const pickAsrModel = () => (modelKeysReady.has('asr-small') ? 'asr-small' : modelKeysReady.has('asr') ? 'asr' : null);
         // v2：翻譯模型改用較高精度的解碼器，舊版下載的翻譯模型需重新下載；語音模型不變，沿用舊紀錄
         const MODELS_KEY = 'tm_models_v2';
         const modelKeysReady = new Set(JSON.parse(
@@ -904,10 +908,11 @@
             // 內建模型（手機可用）
             const packReady = (id) => MODEL_PACKS[id].keys.every((k) => modelKeysReady.has(k));
             lines.push(`翻譯模型：中英${packReady('zhen') ? '已就緒' : '未下載'}、日英${packReady('jaen') ? '已就緒' : '未下載'}（中日互譯需兩組）`);
-            lines.push(`語音辨識模型：${packReady('asr') ? '已就緒' : '未下載'}`);
+            lines.push(`語音辨識模型：${packReady('asrSmall') ? '高準確已就緒' : packReady('asr') ? '標準已就緒（可升級為高準確）' : '未下載'}`);
             for (const id of Object.keys(MODEL_PACKS)) {
                 const b = $(`btnModel-${id}`);
-                if (!b.disabled) b.hidden = packReady(id);
+                // 已有高準確版時，不必再提供標準版
+                if (!b.disabled) b.hidden = packReady(id) || (id === 'asr' && packReady('asrSmall'));
             }
 
             if (!deviceSupported) {
@@ -1247,7 +1252,7 @@
                 const local = localSpeech[from];
                 if (local?.state === 'available') {
                     startRecording(role, btn, local.tag);
-                } else if (modelKeysReady.has('asr') && window.MediaRecorder && navigator.mediaDevices?.getUserMedia) {
+                } else if (pickAsrModel() && window.MediaRecorder && navigator.mediaDevices?.getUserMedia) {
                     startModelRecording(role, btn);   // 瀏覽器沒有裝置端語音辨識（手機）：錄音後交給 Whisper 模型
                 } else {
                     setStatus('離線中', 'offline');
@@ -1420,6 +1425,41 @@
             }
         }
 
+        /**
+         * 送進模型前的整理：切掉頭尾的靜音、把音量拉到一致。
+         * 靜音會讓 Whisper 憑空生出字句，音量太小則容易聽錯。完全沒有人聲時回傳 null。
+         */
+        function prepareSpeech(pcm) {
+            const FRAME = 320;   // 20 毫秒
+            const frames = Math.floor(pcm.length / FRAME);
+            if (!frames) return null;
+            const rms = new Float32Array(frames);
+            let maxRms = 0;
+            for (let f = 0; f < frames; f++) {
+                let sum = 0;
+                for (let i = f * FRAME, end = i + FRAME; i < end; i++) sum += pcm[i] * pcm[i];
+                rms[f] = Math.sqrt(sum / FRAME);
+                if (rms[f] > maxRms) maxRms = rms[f];
+            }
+            if (maxRms < 0.004) return null;   // 整段幾乎無聲
+            const threshold = Math.max(0.003, maxRms * 0.08);
+            let first = 0;
+            let last = frames - 1;
+            while (first < frames && rms[first] < threshold) first++;
+            while (last > first && rms[last] < threshold) last--;
+            const PAD = 15;   // 頭尾各留 0.3 秒，避免切到字頭字尾
+            const start = Math.max(0, first - PAD) * FRAME;
+            const end = Math.min(frames, last + 1 + PAD) * FRAME;
+            if (end - start < 16000 * 0.3) return null;
+
+            const out = pcm.slice(start, end);
+            let peak = 0;
+            for (let i = 0; i < out.length; i++) { const a = Math.abs(out[i]); if (a > peak) peak = a; }
+            const gain = Math.min(20, 0.9 / peak);
+            if (gain > 1.05) for (let i = 0; i < out.length; i++) out[i] *= gain;
+            return out;
+        }
+
         async function startModelRecording(role, btn) {
             const from = role === 'me' ? 'zh' : state.other;
             const to = role === 'me' ? state.other : 'zh';
@@ -1442,7 +1482,10 @@
 
             let stream;
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // 單聲道並開啟降噪、回音消除、自動增益，嘈雜環境下辨識較穩
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+                });
             } catch {
                 release();
                 setStatus('麥克風未授權', 'error');
@@ -1466,11 +1509,11 @@
                 stopStream();
                 release();
                 try {
-                    const audio = await decodeTo16k(new Blob(chunks, { type: recorder.mimeType }));
-                    if (audio.length < 16000 * 0.4) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
+                    const audio = prepareSpeech(await decodeTo16k(new Blob(chunks, { type: recorder.mimeType })));
+                    if (!audio) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     setStatus('辨識語音中', 'busy');
                     bubble.setPlaceholder('辨識語音中…');
-                    const text = await mtCall({ type: 'transcribe', audio, lang: from, offline: !navigator.onLine }, null, [audio.buffer]);
+                    const text = await mtCall({ type: 'transcribe', audio, lang: from, model: pickAsrModel(), offline: !navigator.onLine }, null, [audio.buffer]);
                     if (!text) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     bubble.setSource(text);
                     bubble.setPending('');
