@@ -203,6 +203,8 @@
         .msg__btn svg.i { width: 16px; height: 16px; }
         .msg__btn:hover { background: var(--card-2); color: var(--text); }
         .msg__btn.is-active { color: var(--accent); }
+        .msg__error { flex: 1; align-self: center; padding: 0 9px; font-size: 12.5px; color: var(--err); }
+        .msg__btn--retry { color: var(--text); background: var(--card-2); font-weight: 600; }
 
         /* ---------- 底部操作區 ---------- */
         .dock {
@@ -1394,6 +1396,22 @@
                     }
                     return btnSpeak;
                 },
+                /** 翻譯沒成功：顯示原因與重試按鈕。已翻好的部分留在畫面上，但不算定稿 */
+                showRetry(message, onRetry) {
+                    dst.hidden = false;
+                    dst.classList.remove('is-typing');
+                    const note = make('div', 'msg__error', message);
+                    const btnRetry = make('button', 'msg__btn msg__btn--retry', '重試');
+                    btnRetry.type = 'button';
+                    btnRetry.addEventListener('click', () => {
+                        actions.hidden = true;
+                        actions.replaceChildren();
+                        onRetry();
+                    });
+                    actions.replaceChildren(note, btnRetry);
+                    actions.hidden = false;
+                    scrollToBottom();
+                },
                 /** 圖片訊息：設定要存進歷史的縮圖（要在 finalize 之前呼叫） */
                 setThumbnail(dataUrl) { thumbnail = dataUrl; },
                 fail(message) {
@@ -1675,6 +1693,7 @@
             const parts = [];             // 已送去翻的各段：{ src, dst, preview }，依說話順序
             let pending = 0;              // 還沒翻完的段數
             let failMessage = '';
+            let turnRemembered = false;   // 這次聆聽的原文是否已記進對話上下文（重試時不要重複記）
 
             const newSegment = () => ({
                 carry: '',                // 上一個辨識器結束時還沒講完、帶過來的文字
@@ -1699,7 +1718,9 @@
                 let i = 0;
                 const done = [];
                 while (i < parts.length && parts[i].dst !== null) done.push(parts[i++].dst);
-                const working = parts.slice(i).map((p) => p.dst ?? p.preview).concat(seg?.preview ?? '').filter(Boolean);
+                const working = parts.slice(i)
+                    .map((p) => (p.failed ? '〔這一段翻譯失敗〕' : p.dst ?? p.preview))
+                    .concat(seg?.preview ?? '').filter(Boolean);
                 if (done.length || working.length || parts.length) {
                     bubble.setTranslation(done.join(DST_GAP),
                         working.length ? (done.length ? DST_GAP : '') + working.join(DST_GAP) : '');
@@ -1750,36 +1771,58 @@
             }
 
             // ---- 一段說完：送出正式翻譯 ----
-            async function translateSegment(s) {
+            function translateSegment(s) {
                 const text = s.text.trim();
-                const context = conversationContext(role, from, parts.slice(-3).map((p) => p.src));
-                const part = { src: text, dst: null, preview: s.preview };
+                const part = {
+                    src: text, dst: null, preview: s.preview, failed: false,
+                    context: conversationContext(role, from, parts.slice(-3).map((p) => p.src)),
+                };
                 parts.push(part);
+                runPart(part, s);
+            }
+
+            /** 暫時性的錯誤（斷線、逾時、服務忙碌）值得再試一次；Key 錯誤或被拒絕的再試也沒用 */
+            const isTransient = (err) => !(err instanceof UserFacingError)
+                && (err?.status === undefined || err.status === 408 || err.status === 429 || err.status >= 500);
+
+            /** 翻譯一個段落。s 是它還在說時的預覽狀態（只有第一次翻才有，重試時沒有） */
+            async function runPart(part, s = null) {
+                const text = part.src;
+                part.failed = false;
                 pending++;
                 render();
                 if (ended) setStatus('翻譯中', 'busy');
                 try {
                     let result;
-                    if (s.liveDone?.text === text) {
+                    if (s?.liveDone?.text === text) {
                         // 預覽已經用同一套模型翻過一模一樣的文字：直接沿用
                         s.liveJob?.abort();
                         s.liveJob = null;
                         result = s.liveDone.result;
-                    } else if (s.liveJob && s.liveJobText === text) {
+                    } else if (s?.liveJob && s.liveJobText === text) {
                         result = await s.liveJob.promise;   // 同一段文字正在翻：等它就好
                     } else {
-                        s.liveJob?.abort();
-                        s.liveJob = null;
-                        result = localTag
-                            ? await translateOnDevice(text, to, from)
-                            : await streamClaude(textContent(text, to, context), (partial) => { part.preview = partial; render(); }).promise;
+                        s?.liveJob?.abort();
+                        if (s) s.liveJob = null;
+                        const translateOnce = () => (localTag
+                            ? translateOnDevice(text, to, from)
+                            : streamClaude(textContent(text, to, part.context), (partial) => { part.preview = partial; render(); }).promise);
+                        try {
+                            result = await translateOnce();
+                        } catch (err) {
+                            // 行動網路偶爾會斷一下：暫時性的錯誤自動再試一次
+                            if (!isTransient(err)) throw err;
+                            diag(`翻譯暫時失敗，自動重試：${err?.name || ''}${err?.status ? ` HTTP ${err.status}` : ''}`);
+                            await sleep(1000);
+                            result = await translateOnce();
+                        }
                     }
                     // 講完的句子補上句尾標點；被切在句子中間的片段則保持原樣，才能和下一段接起來
                     const tidy = tidyPunctuation(result, to);
                     part.dst = looksUnfinished(text, from) ? tidy.trim() : endSentence(tidy, to);
                 } catch (err) {
                     failMessage = await explainError(err);
-                    part.dst = '〔這一段翻譯失敗〕';
+                    part.failed = true;
                 } finally {
                     pending--;
                     render();
@@ -1791,11 +1834,23 @@
             function settle() {
                 if (!ended || pending > 0 || !parts.length) return;
                 bubble.setSource(parts.map((p) => p.src).join(SRC_GAP));
-                rememberTurn(role, from, parts.map((p) => p.src).join(SRC_GAP));   // 給之後的句子當上下文
+                if (!turnRemembered) {
+                    turnRemembered = true;
+                    rememberTurn(role, from, parts.map((p) => p.src).join(SRC_GAP));   // 給之後的句子當上下文
+                }
+                const failedParts = parts.filter((p) => p.failed);
+                if (failedParts.length) {
+                    // 有段落沒翻成功：不當成譯文、不存入歷史、不朗讀，改顯示原因與重試按鈕
+                    setStatus(failMessage, 'error');
+                    bubble.showRetry(failMessage, () => {
+                        failMessage = '';
+                        failedParts.forEach((p) => runPart(p));
+                    });
+                    return;
+                }
                 // 整段結束了，最後一句即使聽起來沒講完也補上句尾
                 const full = endSentence(parts.map((p) => p.dst).join(DST_GAP), to);
                 const btnSpeak = bubble.finalize(full, to);
-                if (failMessage) { setStatus(failMessage, 'error'); return; }
                 setIdleStatus();
                 // 使用者按結束＝說完了，把整段譯文唸出來。不是使用者按的結束就不自動唸
                 if (stopReason === 'user' && userStopped) speak(full, to, btnSpeak);
