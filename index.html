@@ -687,9 +687,15 @@
                 : { effort: PREVIEW_EFFORT };
         }
 
-        const textContent = (text, targetKey) => [{
+        /** 連續聆聽時是一段一段翻的；把前面幾段原文附上當上下文，代名詞、省略的主詞才翻得對 */
+        const contextNote = (context) => (context.length
+            ? `\nEarlier in the same speech, for context only — do not translate it again:\n<context>\n${context.join('\n')}\n</context>\n`
+              + 'The source below continues from it and may be a fragment of a sentence; translate only the source.\n'
+            : '');
+
+        const textContent = (text, targetKey, context = []) => [{
             type: 'text',
-            text: `Translate into ${LANGS[targetKey].prompt}.${glossaryNote()}\n<source>\n${text}\n</source>`,
+            text: `Translate into ${LANGS[targetKey].prompt}.${glossaryNote()}${contextNote(context)}\n<source>\n${text}\n</source>`,
         }];
 
         /** 把錯誤轉成給使用者看的訊息；Key 有問題時順便開啟設定 */
@@ -1325,6 +1331,9 @@
         //  語音模式
         // ============================================================
         const IS_ANDROID = /Android/i.test(navigator.userAgent);
+        // iPadOS 的 Safari 會自稱 Mac，用觸控點數補判
+        const IS_MOBILE = IS_ANDROID || /iPhone|iPad|iPod/i.test(navigator.userAgent)
+            || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
         /** 把兩段聽到的文字接起來：英文中間補空白，中日文直接相連 */
         const joinSpeech = (a, b, lang) => (!a ? b : !b ? a : lang === 'en' ? `${a.trimEnd()} ${b.trimStart()}` : a + b);
         let activeRec = null;      // 目前的聆聽（有 stop() 的物件）
@@ -1374,104 +1383,176 @@
             startRecording(role, btn);
         }
 
+        const SEGMENT_PAUSE_MS = 900;     // 辨識器確定一段話後，停頓這麼久就先把這段送去翻
+        const MAX_SILENCE_MS = 45000;     // 這麼久完全沒聽到話，才自動結束聆聽
+        // 無法靠重開解決的錯誤；其餘（no-speech、aborted、network…）都會接著重開
+        const FATAL_REC_ERRORS = ['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'];
+
+        /**
+         * 連續聆聽、逐段翻譯。
+         * 按下開始後一直聽到使用者按結束為止。每講完一小段（辨識器確定文字後停頓一下）就先把那一段
+         * 翻出來，同時繼續聽下一段，不必等整段說完。辨識器本身遇到停頓或時間上限會自己結束，
+         * 這裡會把已聽到的先送翻、再重開一個接著聽，所以長時間說話不會中斷，也不會整段遺失。
+         */
         function startRecording(role, btn, localTag = null) {
-            // 開始時就固定語言組合，錄音途中切換語言不影響這一句
+            // 開始時就固定語言組合，錄音途中切換語言不影響這次聆聽
             const from = role === 'me' ? 'zh' : state.other;
             const to = role === 'me' ? state.other : 'zh';
             const who = role === 'me' ? '我' : '對方';
+            const tag = `${who} · ${LANGS[from].label} → ${LANGS[to].label}${localTag ? ' · 離線' : ''}`;
 
-            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${localTag ? ' · 離線' : ''}` });
-            bubble.setPlaceholder('正在聆聽…');
-
-            // 辨識器遇到停頓或時間上限會自己結束。使用者沒按結束前，就接著開下一段繼續聽，
-            // 長句才不會被從中截斷。carried 是前幾段已經聽到的文字。
+            // 辨識器（會重開很多次）
             let rec = null;
-            let carried = '';
-            let sessionText = '';
-            let heard = '';
-            let userStopped = false;
-            let silentSessions = 0;   // 連續幾段都沒聽到東西；用來避免沒人說話時無止盡地重開
+            let recActive = false;        // 目前的辨識器是否還在跑（start 之後、onend 之前）
             let recError = '';
+            let sessionFinal = '';        // 目前這個辨識器已確定的文字
+            let sessionHeard = false;     // 目前這個辨識器有沒有聽到東西
+            let sessionStartedAt = 0;
+            let committedLen = 0;         // sessionFinal 之中已經送去翻譯的長度
+            let quickFailures = 0;        // 連續幾次「一開就結束而且沒聽到東西」
+            let restartTimer = 0;
+            // 整次聆聽
+            let userStopped = false;
             let ended = false;
-            let liveTimer = 0;
-            let liveJob = null;       // 進行中的即時預覽請求
-            let liveQueued = '';      // 預覽進行中又收到的新文字
-            let lastLiveText = '';
-            let hasPreview = false;
-            let liveJobText = '';     // 進行中的預覽正在翻哪段文字
-            let liveDone = null;      // 最近一次翻完的預覽：{ text, result }
+            let lastHeardAt = Date.now();
+            let commitTimer = 0;
+            // 段落
+            let seg = null;               // 正在聽的這一段
+            const history = [];           // 已送翻譯的各段原文，給後面的段落當上下文
+            let segmentCount = 0;
+            let pending = 0;              // 還沒翻完的段數
+            let lastDone = null;          // 最後翻完的一段：{ result, btnSpeak }
+            let failMessage = '';
 
-            async function runLive(text) {
-                if (ended || !text) return;
-                if (liveJob) { liveQueued = text; return; }   // 同時間只跑一個預覽請求
-                if (text === lastLiveText) return;
-                lastLiveText = text;
-                const show = (partial) => {
-                    if (ended || liveJob !== job) return;
-                    hasPreview = true;
-                    bubble.setPending(partial);
+            function openSegment() {
+                seg = {
+                    bubble: createBubble({ side: role, tag }),
+                    text: '', closed: false,
+                    liveTimer: 0, liveJob: null, liveJobText: '', liveQueued: '', lastLiveText: '',
+                    hasPreview: false, liveDone: null,
                 };
-                // 第一次預覽邊翻邊顯示；之後的預覽等整段翻完才換上去。
-                // 否則每次重翻，畫面上的譯文都會從頭重新跑字，句子越長越閃。
-                const streamInto = hasPreview ? null : show;
-                // 離線（裝置端辨識）時，預覽也用裝置端翻譯
-                // 連線時預覽用的是求快的設定，結果不拿來當最終譯文；最終一律用高 effort 重新翻。
-                // 離線（裝置端翻譯）預覽與最終是同一套模型，才可以直接沿用。
+                return seg;
+            }
+
+            // ---- 這一段還在說的時候：即時預覽 ----
+            async function runLive(s, text) {
+                if (s.closed || !text) return;
+                if (s.liveJob) { s.liveQueued = text; return; }   // 同時間只跑一個預覽請求
+                if (text === s.lastLiveText) return;
+                s.lastLiveText = text;
+                const show = (partial) => {
+                    if (s.closed || s.liveJob !== job) return;
+                    s.hasPreview = true;
+                    s.bubble.setPending(partial);
+                };
+                // 第一次預覽邊翻邊顯示；之後的等整段翻完才換上去，避免譯文一直從頭重新跑字
+                const streamInto = s.hasPreview ? null : show;
+                // 連線時預覽用的是求快的設定，結果不拿來當最終譯文；離線（裝置端翻譯）才可以沿用
                 const preview = localTag ? null : previewOptions();
                 const reusable = !!localTag;
                 const settle = (result) => {
-                    if (reusable) liveDone = { text, result };   // 說完時若文字沒再變，直接拿來當最終結果
+                    if (reusable) s.liveDone = { text, result };
                     show(result);
                     return result;
                 };
                 const job = localTag
                     ? { promise: translateOnDevice(text, to, from).then(settle), abort() {} }
                     : (() => {
-                        const stream = streamClaude(textContent(text, to), streamInto, preview ?? {});
+                        const stream = streamClaude(textContent(text, to, history.slice(-3)), streamInto, preview);
                         const promise = stream.promise.then(settle, (err) => {
                             // API 不接受關閉思考時（400），之後的預覽改回預設設定
-                            if (preview?.thinkingOff && err?.status === 400) previewThinkingOff = false;
+                            if (preview.thinkingOff && err?.status === 400) previewThinkingOff = false;
                             throw err;
                         });
                         return { promise, abort: stream.abort };
                     })();
-                liveJob = job;
-                liveJobText = reusable ? text : '';
+                s.liveJob = job;
+                s.liveJobText = reusable ? text : '';
                 try { await job.promise; }
-                catch { /* 預覽失敗不提示，最終翻譯才處理錯誤 */ }
+                catch { /* 預覽失敗不提示，這一段送出翻譯時才處理錯誤 */ }
                 finally {
-                    if (liveJob === job) liveJob = null;
-                    if (!ended && liveQueued) { const next = liveQueued; liveQueued = ''; runLive(next); }
+                    if (s.liveJob === job) s.liveJob = null;
+                    if (!s.closed && s.liveQueued) { const next = s.liveQueued; s.liveQueued = ''; runLive(s, next); }
                 }
             }
 
-            async function runFinal(text) {
-                setStatus('翻譯中', 'busy');
-                if (!hasPreview) bubble.setPending('');
+            // ---- 一段說完：送出正式翻譯 ----
+            async function translateSegment(s) {
+                const text = s.text.trim();
+                const context = history.slice(-3);
+                history.push(text);
+                segmentCount++;
+                pending++;
+                s.bubble.setSource(text);
+                if (!s.hasPreview) s.bubble.setPending('');
+                if (ended) setStatus('翻譯中', 'busy');
                 try {
                     let result;
-                    if (liveDone?.text === text) {
-                        // 預覽已經翻過一模一樣的文字：直接沿用，省下一整次請求
-                        liveJob?.abort();
-                        liveJob = null;
-                        result = liveDone.result;
-                    } else if (liveJob && liveJobText === text) {
-                        // 同一段文字的預覽正在翻：等它翻完就好，不要中止後重新發一次
-                        result = await liveJob.promise;
+                    if (s.liveDone?.text === text) {
+                        // 預覽已經用同一套模型翻過一模一樣的文字：直接沿用
+                        s.liveJob?.abort();
+                        s.liveJob = null;
+                        result = s.liveDone.result;
+                    } else if (s.liveJob && s.liveJobText === text) {
+                        result = await s.liveJob.promise;   // 同一段文字正在翻：等它就好
                     } else {
-                        liveJob?.abort();
-                        liveJob = null;
+                        s.liveJob?.abort();
+                        s.liveJob = null;
                         result = localTag
                             ? await translateOnDevice(text, to, from)
-                            : await streamClaude(textContent(text, to), (partial) => bubble.setPending(partial)).promise;
+                            : await streamClaude(textContent(text, to, context), (partial) => s.bubble.setPending(partial)).promise;
                     }
-                    const btnSpeak = bubble.finalize(result, to);
-                    setIdleStatus();
-                    speak(result, to, btnSpeak);
+                    lastDone = { result, btnSpeak: s.bubble.finalize(result, to) };
                 } catch (err) {
-                    const msg = await explainError(err);
-                    bubble.fail(msg);
-                    setStatus(msg, 'error');
+                    failMessage = await explainError(err);
+                    s.bubble.fail(failMessage);
+                } finally {
+                    pending--;
+                    settle();
+                }
+            }
+
+            /** 聆聽結束而且每一段都翻完後，收尾：更新狀態、決定要不要朗讀 */
+            function settle() {
+                if (!ended || pending > 0) return;
+                if (failMessage) { setStatus(failMessage, 'error'); return; }
+                setIdleStatus();
+                // 只有一段時照舊自動朗讀。多段就不自動唸：聆聽途中唸出來會被麥克風收進去，
+                // 全部說完再一口氣唸又太長，改由使用者點「朗讀」
+                if (segmentCount === 1 && lastDone) speak(lastDone.result, to, lastDone.btnSpeak);
+                else if (segmentCount > 1) toast(`已翻譯 ${segmentCount} 段，點「朗讀」可播放`);
+            }
+
+            function commitSegment() {
+                clearTimeout(commitTimer);
+                const s = seg;
+                if (!s || !s.text.trim()) return;
+                seg = null;
+                s.closed = true;
+                clearTimeout(s.liveTimer);
+                committedLen = sessionFinal.length;
+                translateSegment(s);
+            }
+
+            function handleResult(finalText, interimText) {
+                sessionFinal = finalText;
+                const freshFinal = finalText.slice(committedLen);   // 還沒送去翻的已確定文字
+                const fresh = freshFinal + interimText;
+                if (!fresh.trim()) return;
+                sessionHeard = true;
+                lastHeardAt = Date.now();
+                const s = seg ?? openSegment();
+                s.text = fresh;
+                s.bubble.setSource(freshFinal, interimText);
+                clearTimeout(s.liveTimer);
+                clearTimeout(commitTimer);
+                if (interimText.trim()) {
+                    // 還在說：稍等一下再出預覽，避免每個字都發請求
+                    const snapshot = fresh.trim();
+                    if (state.live && snapshot.length >= 2) s.liveTimer = setTimeout(() => runLive(s, snapshot), LIVE_DEBOUNCE_MS);
+                } else {
+                    // 辨識器已確定這段話：再停頓一下沒有新的話，就把這一段送去翻
+                    commitTimer = setTimeout(commitSegment, SEGMENT_PAUSE_MS);
                 }
             }
 
@@ -1479,7 +1560,9 @@
             const session = {
                 stop() {
                     userStopped = true;
-                    try { rec?.stop(); } catch { finish(); }
+                    clearTimeout(restartTimer);
+                    if (!recActive) { finish(); return; }   // 正在兩個辨識器之間的空檔
+                    try { rec.stop(); } catch { finish(); }
                 },
             };
 
@@ -1511,17 +1594,7 @@
                     if (IS_ANDROID && finalText.trim() && interimText.trim().startsWith(finalText.trim())) {
                         interimText = interimText.trim().slice(finalText.trim().length);
                     }
-                    sessionText = finalText + interimText;
-                    heard = joinSpeech(carried, sessionText, from);
-                    if (!heard) return;
-                    bubble.setSource(joinSpeech(carried, finalText, from), interimText);
-                    if (state.live) {
-                        clearTimeout(liveTimer);
-                        const snapshot = heard.trim();
-                        // 辨識器已確定一段話（沒有尚在變動的部分）時立刻翻，不必再等防抖時間；
-                        // 還在變動時才等一下，避免每個字都發請求
-                        if (snapshot.length >= 2) liveTimer = setTimeout(() => runLive(snapshot), interimText ? LIVE_DEBOUNCE_MS : 0);
-                    }
+                    handleResult(finalText, interimText);
                 };
 
                 r.onerror = (e) => { recError = e.error; };
@@ -1529,28 +1602,58 @@
                 // onerror 之後一定會接 onend，收尾統一在這裡做
                 r.onend = () => {
                     if (rec !== r) return;
-                    silentSessions = sessionText.trim() ? 0 : silentSessions + 1;
-                    const fatal = ['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported', 'aborted'].includes(recError);
-                    // 不是使用者按的結束、也不是無法繼續的錯誤：接著聽下一段。
-                    // 連續兩段都沒聲音就不再重開，避免沒人說話時麥克風一直開著。
-                    if (!userStopped && !fatal && silentSessions < 2 && activeRec === session) {
-                        carried = joinSpeech(carried, sessionText.trim(), from);
-                        sessionText = '';
-                        recError = '';
-                        try { openRecognizer(); return; }
-                        catch (e) { console.warn('無法接續聆聽：', e); }
+                    recActive = false;
+                    // 這個辨識器聽到、但還沒送出的話，先送去翻，才不會因為它中斷而遺失
+                    commitSegment();
+                    quickFailures = (!sessionHeard && Date.now() - sessionStartedAt < 1000) ? quickFailures + 1 : 0;
+                    const fatal = FATAL_REC_ERRORS.includes(recError);
+                    const silentTooLong = Date.now() - lastHeardAt > MAX_SILENCE_MS;
+                    if (userStopped || fatal || silentTooLong || quickFailures >= 4 || activeRec !== session) {
+                        finish();
+                        return;
                     }
-                    finish();
+                    restart(0);
                 };
 
+                sessionFinal = '';
+                sessionHeard = false;
+                committedLen = 0;
+                recError = '';
+                sessionStartedAt = Date.now();
                 rec = r;
                 r.start();
+                recActive = true;
+            }
+
+            /** 接著開下一個辨識器。剛失敗過就稍等再試，啟動失敗最多重試三次 */
+            function restart(attempt) {
+                clearTimeout(restartTimer);
+                restartTimer = setTimeout(() => {
+                    if (userStopped || ended) { finish(); return; }
+                    try {
+                        openRecognizer();
+                    } catch (e) {
+                        console.warn('無法接續聆聽：', e);
+                        if (attempt < 3) restart(attempt + 1); else finish();
+                    }
+                }, attempt || quickFailures ? 300 : 0);
             }
 
             function finish() {
                 if (ended) return;
                 ended = true;
-                clearTimeout(liveTimer);
+                clearTimeout(commitTimer);
+                clearTimeout(restartTimer);
+                if (seg?.text.trim()) {
+                    commitSegment();
+                } else if (seg) {
+                    // 還沒聽到東西的空白氣泡
+                    seg.closed = true;
+                    clearTimeout(seg.liveTimer);
+                    seg.liveJob?.abort();
+                    seg.bubble.remove();
+                    seg = null;
+                }
                 btn.classList.remove('is-recording');
                 // 只有自己仍是目前的聆聽才重設共用狀態，避免舊的事件蓋掉新的
                 if (activeRec === session) {
@@ -1559,14 +1662,15 @@
                     stopMeter();
                     el.voiceHint.textContent = '點一下開始說話，再點一下結束';
                 }
-                const text = heard.trim();
-                if (text) {
-                    bubble.setSource(text);
-                    runFinal(text);
+
+                if (segmentCount > 0) {
+                    // 不是使用者按的結束：提醒一下，免得以為還在聽
+                    if (!userStopped) toast('聆聽已結束，要繼續請再按一次');
+                    if (pending > 0) setStatus('翻譯中', 'busy');
+                    settle();
                     return;
                 }
-                liveJob?.abort();
-                bubble.remove();
+                // 完全沒聽到東西
                 if (localTag && (recError === 'service-not-allowed' || recError === 'language-not-supported')) {
                     setStatus('離線語音無法使用', 'error');
                     toast('離線語音包無法使用，請連線後到設定重新下載');
@@ -1577,7 +1681,10 @@
                     setStatus('找不到麥克風', 'error');
                 } else if (recError === 'network') {
                     setStatus('語音辨識連線失敗', 'error');
-                } else if (recError === 'no-speech') {
+                } else if (quickFailures >= 4) {
+                    setStatus('語音辨識無法啟動', 'error');
+                    toast('語音辨識一直無法啟動，請再按一次，或改用文字模式');
+                } else if (recError === 'no-speech' || !userStopped) {
                     setStatus('沒有聽到聲音');
                 } else {
                     setIdleStatus();
@@ -1586,17 +1693,19 @@
 
             activeRec = session;
             activeBtn = btn;
+            openSegment().bubble.setPlaceholder('正在聆聽…');
             playBeep();
-            // Android 上語音辨識與另一條麥克風串流無法共用，硬開波形可能讓辨識提早中斷，改用示意動畫
-            if (IS_ANDROID) startFakeMeter(role); else startMeter(role);
+            // 手機上語音辨識與另一條麥克風串流無法共用，硬開波形可能讓辨識中斷，改用示意動畫
+            if (IS_MOBILE) startFakeMeter(role); else startMeter(role);
             try {
                 openRecognizer();
             } catch (e) {
                 console.error(e);
+                ended = true;
                 activeRec = null;
                 activeBtn = null;
                 stopMeter();
-                bubble.remove();
+                seg.bubble.remove();
                 setStatus('無法啟動語音辨識', 'error');
             }
         }
