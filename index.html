@@ -720,6 +720,8 @@
               + 'Use it to resolve what the source refers to (what "this" or "here" means, which item is being counted, who is being addressed) '
               + `and to pick fitting words and counters:\n<context>\n${context.join('\n')}\n</context>\n`
               + 'The source below is what is said next. It may continue the last line and may be a fragment of a sentence; translate only the source.\n'
+              + 'Travellers often have short, unrelated exchanges with different people. If the source starts a new topic or does not follow from the context, '
+              + 'ignore the context completely and translate the source on its own — never carry over details that the source does not support.\n'
             : '');
 
         // ---------- 對話紀錄（給翻譯當上下文） ----------
@@ -728,17 +730,31 @@
         // 只留在記憶體裡，清除對話時一起清掉。
         const SPEAKER_LABEL = { me: 'Traveller', other: 'Local person' };
         const LANG_LABEL = { zh: 'Chinese', ja: 'Japanese', en: 'English' };
-        const conversation = [];   // { role, lang, text }
+        // 出國時多半是零散的短對話：問完店員，過一陣子又去問司機，兩段毫不相干。
+        // 所以前文只在「同一段對話」內有效：隔太久沒講話就視為新對話，之前的全部不用。
+        const CONTEXT_GAP_MS = 90 * 1000;   // 兩句之間隔超過這麼久，就當作換了一段對話
+        const conversation = [];   // { role, lang, text, at }
         const speakerLine = (role, lang, text) => `${SPEAKER_LABEL[role]} (${LANG_LABEL[lang]}): ${text}`;
         function rememberTurn(role, lang, text) {
             if (!text.trim()) return;
-            conversation.push({ role, lang, text: text.trim() });
+            conversation.push({ role, lang, text: text.trim(), at: Date.now() });
             if (conversation.length > 8) conversation.shift();
         }
-        /** 最近幾句對話；extra 是同一次聆聽裡已經說過的段落 */
+        /** 還算在同一段對話裡的最近幾句：從現在往回找，遇到間隔太久的地方就停 */
+        function recentTurns() {
+            const recent = [];
+            let later = Date.now();
+            for (let i = conversation.length - 1; i >= 0 && recent.length < 6; i--) {
+                if (later - conversation[i].at > CONTEXT_GAP_MS) break;
+                recent.unshift(conversation[i]);
+                later = conversation[i].at;
+            }
+            return recent;
+        }
+        /** 翻譯用的上下文；extra 是同一次聆聽裡已經說過的段落 */
         function conversationContext(role, lang, extra = []) {
             return [
-                ...conversation.slice(-6).map((t) => speakerLine(t.role, t.lang, t.text)),
+                ...recentTurns().map((t) => speakerLine(t.role, t.lang, t.text)),
                 ...extra.map((text) => speakerLine(role, lang, text)),
             ];
         }
@@ -2430,6 +2446,7 @@
 
         document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => switchMode(t.dataset.mode)));
         document.querySelectorAll('#segOther .seg__btn').forEach((b) => b.addEventListener('click', () => {
+            if (state.other !== b.dataset.lang) conversation.length = 0;   // 換了對方的語言＝換了對象，之前的對話不再當前文
             state.other = b.dataset.lang;
             store.set('tm_other', state.other);
             renderControls();
