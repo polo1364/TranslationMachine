@@ -462,7 +462,9 @@
             <div class="offline-box">
                 <span class="field__label">離線使用</span>
                 <p class="offline-box__status" id="offlineStatus">檢查中…</p>
-                <button class="btn" type="button" id="btnOfflineDownload" hidden>下載離線資源</button>
+                <button class="btn" type="button" id="btnOfflineDownload" hidden>下載語音與圖片辨識資源</button>
+                <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 216 MB）</button>
+                <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 242 MB）</button>
             </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
@@ -677,14 +679,62 @@
             return 'en';
         }
 
+        const nativePairState = new Map();   // 記住查過的結果，離線翻譯時不必每次重查
+
         async function pairAvailability(from, to) {
-            if (!deviceSupported) return 'unavailable';
-            try {
-                return await withTimeout(Translator.availability({
-                    sourceLanguage: DEVICE_LANG[from], targetLanguage: DEVICE_LANG[to],
-                }), 8000);
-            } catch { return 'unavailable'; }
+            let state = 'unavailable';
+            if (deviceSupported) {
+                try {
+                    state = await withTimeout(Translator.availability({
+                        sourceLanguage: DEVICE_LANG[from], targetLanguage: DEVICE_LANG[to],
+                    }), 8000);
+                } catch { /* 視為不可用 */ }
+            }
+            nativePairState.set(`${from}>${to}`, state);
+            return state;
         }
+
+        // ---------- 內建翻譯模型（Transformers.js，在 worker 內執行，手機也能用） ----------
+        const MODEL_PACKS = {
+            zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 216 MB' },
+            jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 242 MB' },
+        };
+        const modelKeysReady = new Set(JSON.parse(store.get('tm_models', '[]')));
+        let mtWorker = null;
+        let mtSeq = 0;
+        const mtPending = new Map();
+
+        function mtCall(message, onProgress) {
+            if (!mtWorker) {
+                mtWorker = new Worker('offline-translate-worker.js', { type: 'module' });
+                mtWorker.onmessage = ({ data }) => {
+                    const job = mtPending.get(data.id);
+                    if (!job) return;
+                    if (data.type === 'progress') { job.onProgress?.(data.value); return; }
+                    mtPending.delete(data.id);
+                    if (data.type === 'done') job.resolve(data.result);
+                    else job.reject(new Error(data.message));
+                };
+                mtWorker.onerror = (e) => {
+                    // worker 本身壞掉（例如離線時程式不在快取）：全部回報失敗，下次重建
+                    mtPending.forEach((job) => job.reject(new Error(e.message || 'worker error')));
+                    mtPending.clear();
+                    mtWorker.terminate();
+                    mtWorker = null;
+                };
+            }
+            return new Promise((resolve, reject) => {
+                const id = ++mtSeq;
+                mtPending.set(id, { resolve, reject, onProgress });
+                mtWorker.postMessage({ ...message, id });
+            });
+        }
+
+        // 中日互譯沒有直接模型，經英文轉譯，所以需要兩組模型
+        const modelRoute = (from, to) => (from === 'en' || to === 'en')
+            ? [`${from}>${to}`]
+            : [`${from}>en`, `en>${to}`];
+        const modelRouteReady = (from, to) => modelRoute(from, to).every((k) => modelKeysReady.has(k));
 
         function getDeviceTranslator(from, to, onProgress) {
             const key = `${from}>${to}`;
@@ -700,19 +750,53 @@
         }
 
         async function translateOnDevice(text, to, from = detectLang(text)) {
-            if (!deviceSupported) throw new UserFacingError('目前離線，且此瀏覽器不支援離線翻譯');
             if (from === to) return text;
-            if (await pairAvailability(from, to) !== 'available') {
-                throw new UserFacingError('離線語言包尚未下載，請連線後到設定下載');
+
+            // 1. 瀏覽器內建翻譯（桌面版 Chrome／Edge）優先，品質較好也不佔額外空間
+            const nativeState = nativePairState.get(`${from}>${to}`) ?? await pairAvailability(from, to);
+            if (nativeState === 'available') {
+                try {
+                    const translator = await withTimeout(getDeviceTranslator(from, to), 30000);
+                    const result = (await translator.translate(text)).trim();
+                    if (result) return result;
+                } catch (e) {
+                    console.warn('內建翻譯失敗，改用內建模型：', e);
+                }
             }
+
+            // 2. App 內建的翻譯模型（手機也能用）
+            if (modelRouteReady(from, to)) {
+                try {
+                    const result = await mtCall({ type: 'translate', text, from, to, offline: !navigator.onLine });
+                    if (result) return result;
+                    throw new Error('empty');
+                } catch (e) {
+                    console.error(e);
+                    throw new UserFacingError('離線翻譯失敗，模型可能需要重新下載');
+                }
+            }
+            throw new UserFacingError(`離線翻譯（${LANGS[from].label}→${LANGS[to].label}）尚未下載，請連線後到設定下載`);
+        }
+
+        async function downloadModelPack(packId, btn) {
+            const pack = MODEL_PACKS[packId];
+            const label = btn.textContent;
+            btn.disabled = true;
             try {
-                const translator = await withTimeout(getDeviceTranslator(from, to), 30000);
-                const result = (await translator.translate(text)).trim();
-                if (!result) throw new Error('empty');
-                return result;
+                navigator.storage?.persist?.().catch(() => {});   // 請瀏覽器不要自動清掉下載的模型
+                await mtCall({ type: 'download', keys: pack.keys }, (p) => {
+                    btn.textContent = `下載${pack.label}模型… ${Math.round(p * 100)}%`;
+                });
+                pack.keys.forEach((k) => modelKeysReady.add(k));
+                store.set('tm_models', JSON.stringify([...modelKeysReady]));
+                toast(`${pack.label}模型已就緒`);
             } catch (e) {
                 console.error(e);
-                throw new UserFacingError('離線翻譯失敗');
+                toast(`${pack.label}模型下載失敗，請稍後再試`);
+            } finally {
+                btn.textContent = label;
+                btn.disabled = false;
+                refreshOfflineStatus();
             }
         }
 
@@ -812,17 +896,25 @@
 
             // 翻譯
             let translateReady = false;
+            // 內建模型（手機可用）
+            const packReady = (id) => MODEL_PACKS[id].keys.every((k) => modelKeysReady.has(k));
+            lines.push(`翻譯模型：中英${packReady('zhen') ? '已就緒' : '未下載'}、日英${packReady('jaen') ? '已就緒' : '未下載'}（中日互譯需兩組）`);
+            for (const id of Object.keys(MODEL_PACKS)) {
+                const b = $(`btnModel-${id}`);
+                if (!b.disabled) b.hidden = packReady(id);
+            }
+
             if (!deviceSupported) {
-                lines.push('翻譯：此瀏覽器不支援（需桌面版 Chrome 138 以上或 Edge）');
+                lines.push('瀏覽器內建翻譯：不支援（僅桌面版 Chrome 138 以上與 Edge）');
             } else {
                 const states = await Promise.all(DEVICE_PAIRS.map(([from, to]) => pairAvailability(from, to)));
                 pairStates = states;
                 const ready = states.filter((s) => s === 'available').length;
                 const usable = states.filter((s) => s !== 'unavailable').length;
                 translateReady = ready === DEVICE_PAIRS.length;
-                if (translateReady) lines.push('翻譯：已就緒');
-                else if (usable === 0) lines.push('翻譯：此裝置無法使用');
-                else { lines.push(`翻譯：已下載 ${ready}／${DEVICE_PAIRS.length} 組語言`); canDownload = true; }
+                if (translateReady) lines.push('瀏覽器內建翻譯：已就緒');
+                else if (usable === 0) lines.push('瀏覽器內建翻譯：此裝置無法使用');
+                else { lines.push(`瀏覽器內建翻譯：已下載 ${ready}／${DEVICE_PAIRS.length} 組語言`); canDownload = true; }
             }
 
             // 語音
@@ -842,7 +934,6 @@
             if (store.get('tm_ocr_ready')) lines.push('圖片文字辨識：已就緒');
             else { lines.push('圖片文字辨識：未下載（約數十 MB）'); canDownload = true; }
 
-            if (!deviceSupported) lines.push('沒有離線翻譯時，語音與圖片離線也無法翻譯。');
             statusEl.innerText = lines.join('\n');
             btn.hidden = !canDownload;
             btn.disabled = false;
@@ -1529,6 +1620,10 @@
 
         window.addEventListener('online', () => { setIdleStatus(); toast('已恢復連線'); });
         window.addEventListener('offline', () => { stopRecordingIfAny(); setIdleStatus(); toast(deviceSupported ? '目前離線：改用裝置端翻譯' : '目前離線：可瀏覽對話與朗讀，翻譯需連線'); });
+        for (const id of Object.keys(MODEL_PACKS)) {
+            const b = $(`btnModel-${id}`);
+            b.addEventListener('click', () => downloadModelPack(id, b));
+        }
         refreshLocalSpeech();   // 先查好離線語音狀態，離線時按麥克風才能立即判斷
         $('btnOfflineDownload').addEventListener('click', downloadOfflinePacks);
         document.addEventListener('visibilitychange', () => { if (document.hidden) stopRecordingIfAny(); });
