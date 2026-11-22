@@ -1265,6 +1265,7 @@
                     scrollToBottom();
                 },
                 finalize(text, langKey) {
+                    text = tidyPunctuation(text, langKey);   // 文字、圖片模式的譯文也統一標點
                     dst.hidden = false;
                     dst.classList.remove('is-typing', 'is-error');
                     dst.classList.add('is-clickable');
@@ -1501,6 +1502,23 @@
                 || /(\b(the|a|an|to|of|in|on|at|for|with|and|or|but|so|because|if|that|my|your|is|are|was|were)|,)$/i.test(t);
         }
 
+        /**
+         * 中日文譯文裡的半形標點換成全形（模型偶爾會混用），刪節號統一成「……」。
+         * 只處理緊接在中日文字後面的標點，數字與英文裡的（38.5、U.S.）不動。
+         */
+        function tidyPunctuation(text, lang) {
+            if (lang === 'en') return text;
+            const CJK_CHAR = '[\\u3000-\\u30ff\\u3400-\\u9fff\\uff00-\\uffef]';
+            let out = text.replace(/\.{3,}|。{3,}|…+/g, '……');
+            const map = lang === 'zh'
+                ? { '?': '？', '!': '！', ',': '，', ':': '：', ';': '；' }
+                : { '?': '？', '!': '！' };
+            const marks = Object.keys(map).map((m) => `\\${m}`).join('');
+            // 只吃掉標點前後的空白，不動換行（圖片翻譯的結果是多行的）
+            out = out.replace(new RegExp(`(${CJK_CHAR})[ \\t]*([${marks}])[ \\t]*`, 'g'), (_, ch, mark) => ch + map[mark]);
+            return out;
+        }
+
         /** 譯文缺句尾標點時補上，接在後面的下一段才不會黏在一起 */
         function endSentence(text, lang) {
             const t = text.trim();
@@ -1648,7 +1666,8 @@
                             : await streamClaude(textContent(text, to, context), (partial) => { part.preview = partial; render(); }).promise;
                     }
                     // 講完的句子補上句尾標點；被切在句子中間的片段則保持原樣，才能和下一段接起來
-                    part.dst = looksUnfinished(text, from) ? result.trim() : endSentence(result, to);
+                    const tidy = tidyPunctuation(result, to);
+                    part.dst = looksUnfinished(text, from) ? tidy.trim() : endSentence(tidy, to);
                 } catch (err) {
                     failMessage = await explainError(err);
                     part.dst = '〔這一段翻譯失敗〕';
