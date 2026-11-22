@@ -41,6 +41,8 @@
             --other-en: #8b9dff;
             --warn: #e8b64c;
             --err: #ff6b5e;
+            --num: #f4c95d;
+            --num-bg: rgba(244, 201, 93, 0.16);
             --on-accent: #0d0f12;
             --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
             --other: var(--other-ja);
@@ -63,6 +65,8 @@
                 --other-en: #4a5bd0;
                 --warn: #a8760a;
                 --err: #c93425;
+                --num: #9a4a00;
+                --num-bg: rgba(222, 140, 30, 0.2);
                 --on-accent: #ffffff;
                 --shadow: 0 10px 30px rgba(60, 45, 20, 0.12);
             }
@@ -182,6 +186,12 @@
         }
         .msg__src.is-placeholder { color: var(--muted); font-style: italic; }
         .msg__interim { opacity: 0.55; }
+        /* 數字：用醒目的顏色加底色，方便核對金額、時間這類不能錯的資訊 */
+        .msg__num {
+            color: var(--num); background: var(--num-bg);
+            padding: 0 3px; margin: 0 1px; border-radius: 5px;
+            font-weight: 700; font-variant-numeric: tabular-nums;
+        }
         .msg__dst {
             margin: 7px 0 0; padding-top: 7px; border-top: 1px dashed var(--line);
             font-size: 19px; line-height: 1.55; font-weight: 600; color: var(--text);
@@ -1256,6 +1266,26 @@
             return node;
         }
 
+        // ---------- 數字醒目顯示 ----------
+        // 語音辨識聽錯數字時（4800 聽成 1800），翻譯救不回來：兩個都是合理的金額，前後文無從判斷。
+        // 所以把原文與譯文裡的數字標出來，讓使用者一眼看到辨識到的數字，覺得不對可以當場確認。
+        // 阿拉伯數字一律標；中文／日文數字只標兩個字以上連在一起的（十五、三千二百），
+        // 單一個字太容易誤標（一下、一般、一番）。
+        const NUMBER_RE = /[0-9０-９](?:[0-9０-９,，.．:：]*[0-9０-９])?|[〇零一二三四五六七八九十百千万萬億兩两]{2,}/g;
+        function appendWithNumbers(node, text) {
+            let last = 0;
+            for (const m of text.matchAll(NUMBER_RE)) {
+                if (m.index > last) node.append(text.slice(last, m.index));
+                node.append(make('span', 'msg__num', m[0]));
+                last = m.index + m[0].length;
+            }
+            if (last < text.length) node.append(text.slice(last));
+        }
+        function setTextWithNumbers(node, text) {
+            node.textContent = '';
+            appendWithNumbers(node, text);
+        }
+
         // ---------- 對話歷史（存在這台裝置上，按垃圾桶才清空） ----------
         // 每一則翻譯完成的訊息都存進 localStorage，重新開啟 App 時還原。
         // 只存在本機瀏覽器，不會上傳；圖片只留一張小縮圖。
@@ -1341,8 +1371,12 @@
                 setSource(finalText, interimText = '') {
                     src.hidden = false;
                     src.classList.remove('is-placeholder');
-                    src.textContent = finalText;
-                    if (interimText) src.append(make('span', 'msg__interim', interimText));
+                    setTextWithNumbers(src, finalText);
+                    if (interimText) {
+                        const interim = make('span', 'msg__interim');
+                        appendWithNumbers(interim, interimText);
+                        src.append(interim);
+                    }
                     scrollToBottom();
                 },
                 setPlaceholder(text) {
@@ -1353,7 +1387,7 @@
                     dst.hidden = false;
                     dst.classList.remove('is-error');
                     dst.classList.add('is-typing');
-                    dst.textContent = text;
+                    setTextWithNumbers(dst, text);
                     scrollToBottom();
                 },
                 /** 連續聆聽用：已定稿的譯文正常顯示，後面接著還在翻的部分（淡色） */
@@ -1361,8 +1395,12 @@
                     dst.hidden = false;
                     dst.classList.remove('is-error');
                     dst.classList.add('is-typing');
-                    dst.textContent = doneText;
-                    if (workingText) dst.append(make('span', 'msg__interim', workingText));
+                    setTextWithNumbers(dst, doneText);
+                    if (workingText) {
+                        const working = make('span', 'msg__interim');
+                        appendWithNumbers(working, workingText);
+                        dst.append(working);
+                    }
                     scrollToBottom();
                 },
                 finalize(text, langKey) {
@@ -1370,7 +1408,7 @@
                     dst.hidden = false;
                     dst.classList.remove('is-typing', 'is-error');
                     dst.classList.add('is-clickable');
-                    dst.textContent = text;
+                    setTextWithNumbers(dst, text);
                     dst.lang = LANGS[langKey].html;
                     dst.title = '點一下朗讀';
 
