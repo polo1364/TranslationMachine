@@ -95,14 +95,23 @@ function progressTracker(onProgress) {
 
 // 語音模型獨立保留，不佔翻譯模型的名額。
 // 記憶體裡最多同時有：預覽用的 tiny，加上一個主要模型（base 或 small）。
+// 記憶體充裕的裝置可同時留兩個主要模型（預覽用 base、最終結果用 small），不必來回重新載入。
+const MAX_MAIN_ASR = (self.navigator?.deviceMemory ?? 4) >= 8 ? 2 : 1;
 const asrPipes = new Map();
 function getAsr(key, onProgress) {
-    if (!asrPipes.has(key)) {
+    if (asrPipes.has(key)) {
+        const p = asrPipes.get(key);   // 移到最後，表示最近用過
+        asrPipes.delete(key);
+        asrPipes.set(key, p);
+        return p;
+    }
+    {
         if (key !== 'asr-live') {
-            for (const [other, pipe] of asrPipes) {
-                if (other === 'asr-live') continue;
-                asrPipes.delete(other);
-                pipe.then((p) => p.dispose?.()).catch(() => {});
+            const mains = [...asrPipes.keys()].filter((k) => k !== 'asr-live');
+            while (mains.length >= MAX_MAIN_ASR) {
+                const oldest = mains.shift();
+                asrPipes.get(oldest).then((p) => p.dispose?.()).catch(() => {});
+                asrPipes.delete(oldest);
             }
         }
         asrPipes.set(key, pipeline('automatic-speech-recognition', ASR_MODELS[key].id, {

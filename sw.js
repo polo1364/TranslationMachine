@@ -1,6 +1,6 @@
 // 譯機 service worker
 // 改版時請調整 VERSION，舊快取會在 activate 時清掉。
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL_CACHE = `tm-shell-${VERSION}`;
 const CDN_CACHE = `tm-cdn-${VERSION}`;
 const SHELL = [
@@ -39,12 +39,24 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(request.url);
 
     if (url.origin === self.location.origin) {
-        event.respondWith(networkFirst(request));
+        event.respondWith(networkFirst(request).then(isolate));
     } else if (CDN_HOSTS.has(url.hostname)) {
         event.respondWith(cacheFirst(request));
     }
     // 其他來源（例如 api.anthropic.com）交給瀏覽器直接處理
 });
+
+// 幫自己網域的回應加上「跨來源隔離」標頭。
+// 有了隔離，瀏覽器才開放 SharedArrayBuffer，離線的語音與翻譯模型才能用多執行緒跑（快數倍）。
+// GitHub Pages 無法自訂標頭，所以由 service worker 補上。
+function isolate(response) {
+    if (!response || response.status === 0 || response.type === 'opaqueredirect') return response;
+    const headers = new Headers(response.headers);
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+    headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+    headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 // App 本體：有網路就拿最新版並更新快取，離線時退回快取
 async function networkFirst(request) {

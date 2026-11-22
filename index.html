@@ -749,7 +749,10 @@
         /** 離線時預先載入會用到的模型，第一句話就不用等載入。只載入已下載的，沒下載的不碰 */
         function warmOfflineModels() {
             if (navigator.onLine) return;
-            const asr = ['asr-live', pickAsrModel()].filter((k) => k && modelKeysReady.has(k));
+            // 記憶體充裕時連 base 一起載入：預覽量到裝置夠快就會改用它，先載好才不會卡在途中
+            const roomy = (navigator.deviceMemory ?? 4) >= 8;
+            const asr = [...new Set(['asr-live', roomy ? 'asr' : null, pickAsrModel()])]
+                .filter((k) => k && modelKeysReady.has(k));
             // 先載「對方說 → 中文」，再載「我說 → 對方語言」
             const mt = [...modelRoute(state.other, 'zh'), ...modelRoute('zh', state.other)]
                 .filter((k, i, all) => modelKeysReady.has(k) && all.indexOf(k) === i);
@@ -1428,6 +1431,34 @@
         // ---------- 離線錄音＋Whisper 模型辨識（手機用） ----------
         const MODEL_REC_MAX_MS = 60000;   // 單次錄音上限，避免手機辨識過久或記憶體不足
 
+        // 預覽用哪個語音模型，依這台裝置實測的速度決定：
+        // 先用最小的 tiny；量到它夠快（代表 base 也跑得動）就改用較準的 base，base 太慢再退回 tiny。
+        const liveAsrSpeed = {};   // { 'asr-live': 毫秒, 'asr': 毫秒 }，最近一次預覽辨識的耗時
+        function pickLiveAsrModel(mainModel) {
+            const hasTiny = modelKeysReady.has('asr-live');
+            const hasBase = modelKeysReady.has('asr');
+            // base 與 small 同時留在記憶體需要較多空間；主要模型本身就是 base 時則沒有額外負擔
+            const roomy = mainModel === 'asr' || (navigator.deviceMemory ?? 4) >= 8;
+            const fastEnough = liveAsrSpeed['asr-live'] < 1300 && !(liveAsrSpeed['asr'] > 3000);
+            if (hasBase && roomy && (fastEnough || !hasTiny)) return 'asr';
+            return hasTiny ? 'asr-live' : null;
+        }
+
+        /** 兩次辨識結果開頭相同的部分。連續兩次都一樣，才當作「已穩定」 */
+        function commonPrefix(a, b) {
+            let i = 0;
+            while (i < a.length && i < b.length && a[i] === b[i]) i++;
+            return a.slice(0, i);
+        }
+
+        /** 預覽只翻到最後一個標點為止；講到一半的殘句拿去翻，模型會亂猜 */
+        function cutAtBoundary(text) {
+            const m = text.match(/^[\s\S]*[。！？!?、，,.]/);
+            if (m) return m[0].trim();
+            const enough = /[぀-ヿ㐀-鿿]/.test(text) ? 12 : 40;   // 一直沒標點時，夠長也先翻
+            return text.length >= enough ? text.trim() : '';
+        }
+
         const LIVE_ASR_GAP_MS = 1200;    // 即時預覽：兩次辨識之間至少間隔多久
         const LIVE_ASR_MAX_S = 29;       // 超過這個長度就不再做預覽（Whisper 一次處理 30 秒）
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1560,21 +1591,25 @@
 
             const capture = createPcmCapture(stream);
             const model = pickAsrModel();
-            const liveModel = modelKeysReady.has('asr-live') ? 'asr-live' : null;
             const transcribeAudio = (audio, modelKey) => mtCall(
                 { type: 'transcribe', audio, lang: from, model: modelKey, offline: !navigator.onLine }, null, [audio.buffer]);
 
             let stopped = false;
             let hasPreview = false;
             let hasLiveText = false;
+            let lastLive = null;   // 最近一次完成的預覽辨識：{ text, secs, model }
 
-            // 即時預覽：模型是整段辨識的，所以用小模型反覆辨識「到目前為止」的語音。
+            // 即時預覽：模型是整段辨識的，所以反覆辨識「到目前為止」的語音。
             // 上一輪做完才開始下一輪，裝置越慢預覽就越稀疏，但不會越積越多。
             (async () => {
                 let coveredSecs = 0;
-                while (!stopped && state.live && liveModel) {
+                let prevText = '';
+                let translated = '';
+                while (!stopped && state.live) {
                     await sleep(LIVE_ASR_GAP_MS);
                     if (stopped) break;
+                    const liveModel = pickLiveAsrModel(model);
+                    if (!liveModel) break;
                     const secs = capture.seconds();
                     if (secs > LIVE_ASR_MAX_S) break;
                     if (secs < 2) continue;                 // 太短的片段模型會亂猜
@@ -1582,12 +1617,21 @@
                     const audio = prepareSpeech(capture.snapshot());
                     if (!audio) continue;
                     try {
+                        const startedAt = performance.now();
                         const text = await transcribeAudio(audio, liveModel);
+                        liveAsrSpeed[liveModel] = performance.now() - startedAt;
                         coveredSecs = secs;
+                        lastLive = { text, secs, model: liveModel };
                         if (stopped || !text) continue;
                         hasLiveText = true;
-                        bubble.setSource('', text);
-                        const preview = await translateOnDevice(text, to, from);
+                        // 連續兩次辨識開頭一致的部分才算穩定：穩定的正常顯示，尚未穩定的淡色顯示
+                        const stable = commonPrefix(prevText, text);
+                        prevText = text;
+                        bubble.setSource(stable, text.slice(stable.length));
+                        const ready = cutAtBoundary(stable);
+                        if (!ready || ready === translated) continue;
+                        translated = ready;
+                        const preview = await translateOnDevice(ready, to, from);
                         if (!stopped) { hasPreview = true; bubble.setPending(preview); }
                     } catch (e) {
                         console.warn('離線即時預覽失敗：', e);   // 預覽失敗不提示，最終結果才處理錯誤
@@ -1599,17 +1643,23 @@
                 if (stopped) return;
                 stopped = true;
                 clearTimeout(autoStop);
+                const total = capture.seconds();
                 const pcm = capture.snapshot();
                 capture.stop();
                 stopStream();
                 release();
                 try {
-                    // 最終結果一律用較準的主要模型整段重新辨識
-                    const audio = prepareSpeech(pcm);
-                    if (!audio) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
-                    setStatus('辨識語音中', 'busy');
-                    if (!hasLiveText) bubble.setPlaceholder('辨識語音中…');
-                    const text = await transcribeAudio(audio, model);
+                    let text;
+                    if (lastLive && lastLive.model === model && total - lastLive.secs < 0.6) {
+                        // 預覽用的就是主要模型，而且已涵蓋到結尾：直接沿用，不必整段重新辨識
+                        text = lastLive.text;
+                    } else {
+                        const audio = prepareSpeech(pcm);
+                        if (!audio) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
+                        setStatus('辨識語音中', 'busy');
+                        if (!hasLiveText) bubble.setPlaceholder('辨識語音中…');
+                        text = await transcribeAudio(audio, model);
+                    }
                     if (!text) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     bubble.setSource(text);
                     if (!hasPreview) bubble.setPending('');
@@ -1880,9 +1930,22 @@
 
         // PWA：註冊 service worker，就緒後預先載入 SDK 讓它進入離線快取
         if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))) {
+            // service worker 會幫頁面加上跨來源隔離標頭，離線模型才能用多執行緒（快約一倍）。
+            // 第一次造訪時頁面是在 service worker 接手前載入的，還沒有隔離，所以重新載入一次。
+            const ensureIsolation = () => {
+                if (self.crossOriginIsolated || !navigator.serviceWorker.controller) return false;
+                if (el.screen.querySelector('.msg') || el.apiKey.value || !navigator.onLine) return false;   // 不打斷使用中的畫面
+                try {
+                    if (sessionStorage.getItem('tm_coi')) return false;   // 只試一次，避免不支援時無限重整
+                    sessionStorage.setItem('tm_coi', '1');
+                } catch { return false; }
+                location.reload();
+                return true;
+            };
+            navigator.serviceWorker.addEventListener('controllerchange', ensureIsolation);
             navigator.serviceWorker.register('sw.js')
                 .then(() => navigator.serviceWorker.ready)
-                .then(() => { if (navigator.onLine) loadSdk().catch(() => {}); })
+                .then(() => { if (!ensureIsolation() && navigator.onLine) loadSdk().catch(() => {}); })
                 .catch((e) => console.warn('Service worker 註冊失敗：', e));
         } else if (navigator.onLine) {
             loadSdk().catch(() => {});
