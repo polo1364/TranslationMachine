@@ -457,7 +457,7 @@
             </label>
             <label class="check">
                 <input type="checkbox" id="liveToggle">
-                <span>說話時即時預覽翻譯<small>關閉後只在說完時翻譯一次，較省用量</small></span>
+                <span>說話時即時預覽翻譯<small>關閉後只在說完時翻譯一次，較省用量；離線時關閉也較省電</small></span>
             </label>
             <div class="offline-box">
                 <span class="field__label">離線使用</span>
@@ -465,8 +465,8 @@
                 <button class="btn" type="button" id="btnOfflineDownload" hidden>下載語音與圖片辨識資源</button>
                 <button class="btn" type="button" id="btnModel-zhen" hidden>下載中英翻譯模型（約 326 MB）</button>
                 <button class="btn" type="button" id="btnModel-jaen" hidden>下載日英翻譯模型（約 351 MB）</button>
-                <button class="btn" type="button" id="btnModel-asrSmall" hidden>下載語音辨識模型・高準確（約 238 MB，辨識較慢）</button>
-                <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型・標準（約 130 MB，較快）</button>
+                <button class="btn" type="button" id="btnModel-asrSmall" hidden>下載語音辨識模型・高準確（約 278 MB，辨識較慢）</button>
+                <button class="btn" type="button" id="btnModel-asr" hidden>下載語音辨識模型・標準（約 170 MB，較快）</button>
             </div>
             <div class="row">
                 <button class="btn btn--ghost" type="button" id="btnModalCancel">取消</button>
@@ -701,8 +701,9 @@
             zhen: { label: '中英', keys: ['zh>en', 'en>zh'], size: '約 326 MB' },
             jaen: { label: '日英', keys: ['ja>en', 'en>ja'], size: '約 351 MB' },
             // Whisper，給沒有裝置端語音辨識的瀏覽器（手機）。兩種擇一即可，都有時優先用高準確
-            asr: { label: '語音辨識（標準）', keys: ['asr'], size: '約 130 MB' },
-            asrSmall: { label: '語音辨識（高準確）', keys: ['asr-small'], size: '約 238 MB' },
+            // 兩種都附帶一個小的「即時預覽」模型（asr-live，約 40 MB），說話途中先出粗略結果
+            asr: { label: '語音辨識（標準）', keys: ['asr', 'asr-live'], size: '約 170 MB' },
+            asrSmall: { label: '語音辨識（高準確）', keys: ['asr-small', 'asr-live'], size: '約 278 MB' },
         };
         const pickAsrModel = () => (modelKeysReady.has('asr-small') ? 'asr-small' : modelKeysReady.has('asr') ? 'asr' : null);
         // v2：翻譯模型改用較高精度的解碼器，舊版下載的翻譯模型需重新下載；語音模型不變，沿用舊紀錄
@@ -744,6 +745,17 @@
             ? [`${from}>${to}`]
             : [`${from}>en`, `en>${to}`];
         const modelRouteReady = (from, to) => modelRoute(from, to).every((k) => modelKeysReady.has(k));
+
+        /** 離線時預先載入會用到的模型，第一句話就不用等載入。只載入已下載的，沒下載的不碰 */
+        function warmOfflineModels() {
+            if (navigator.onLine) return;
+            const asr = ['asr-live', pickAsrModel()].filter((k) => k && modelKeysReady.has(k));
+            // 先載「對方說 → 中文」，再載「我說 → 對方語言」
+            const mt = [...modelRoute(state.other, 'zh'), ...modelRoute('zh', state.other)]
+                .filter((k, i, all) => modelKeysReady.has(k) && all.indexOf(k) === i);
+            if (!asr.length && !mt.length) return;
+            mtCall({ type: 'warm', asr, mt, offline: true }).catch(() => {});
+        }
 
         function getDeviceTranslator(from, to, onProgress) {
             const key = `${from}>${to}`;
@@ -908,7 +920,11 @@
             // 內建模型（手機可用）
             const packReady = (id) => MODEL_PACKS[id].keys.every((k) => modelKeysReady.has(k));
             lines.push(`翻譯模型：中英${packReady('zhen') ? '已就緒' : '未下載'}、日英${packReady('jaen') ? '已就緒' : '未下載'}（中日互譯需兩組）`);
-            lines.push(`語音辨識模型：${packReady('asrSmall') ? '高準確已就緒' : packReady('asr') ? '標準已就緒（可升級為高準確）' : '未下載'}`);
+            const asrModel = pickAsrModel();
+            lines.push(`語音辨識模型：${asrModel === 'asr-small' ? '高準確已就緒' : asrModel === 'asr' ? '標準已就緒（可升級為高準確）' : '未下載'}`);
+            if (asrModel) {
+                lines.push(`離線即時預覽：${modelKeysReady.has('asr-live') ? '已就緒' : '未下載（再按一次語音模型的下載按鈕即可補齊，約 40 MB）'}`);
+            }
             for (const id of Object.keys(MODEL_PACKS)) {
                 const b = $(`btnModel-${id}`);
                 // 已有高準確版時，不必再提供標準版
@@ -1252,7 +1268,7 @@
                 const local = localSpeech[from];
                 if (local?.state === 'available') {
                     startRecording(role, btn, local.tag);
-                } else if (pickAsrModel() && window.MediaRecorder && navigator.mediaDevices?.getUserMedia) {
+                } else if (pickAsrModel() && navigator.mediaDevices?.getUserMedia) {
                     startModelRecording(role, btn);   // 瀏覽器沒有裝置端語音辨識（手機）：錄音後交給 Whisper 模型
                 } else {
                     setStatus('離線中', 'offline');
@@ -1294,11 +1310,15 @@
                 if (liveJob) { liveQueued = text; return; }   // 同時間只跑一個預覽請求
                 if (text === lastLiveText) return;
                 lastLiveText = text;
-                const job = streamClaude(textContent(text, to), (partial) => {
+                const show = (partial) => {
                     if (ended || liveJob !== job) return;
                     hasPreview = true;
                     bubble.setPending(partial);
-                });
+                };
+                // 離線（裝置端辨識）時，預覽也用裝置端翻譯
+                const job = localTag
+                    ? { promise: translateOnDevice(text, to, from).then(show), abort() {} }
+                    : streamClaude(textContent(text, to), show);
                 liveJob = job;
                 try { await job.promise; }
                 catch { /* 預覽失敗不提示，最終翻譯才處理錯誤 */ }
@@ -1343,7 +1363,7 @@
                 heard = finalText + interimText;
                 if (!heard) return;
                 bubble.setSource(finalText, interimText);
-                if (state.live && !localTag) {
+                if (state.live) {
                     clearTimeout(liveTimer);
                     const snapshot = heard.trim();
                     if (snapshot.length >= 2) liveTimer = setTimeout(() => runLive(snapshot), LIVE_DEBOUNCE_MS);
@@ -1408,21 +1428,61 @@
         // ---------- 離線錄音＋Whisper 模型辨識（手機用） ----------
         const MODEL_REC_MAX_MS = 60000;   // 單次錄音上限，避免手機辨識過久或記憶體不足
 
-        /** 把錄音檔解碼成 Whisper 需要的 16 kHz 單聲道 PCM */
-        async function decodeTo16k(blob) {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            try {
-                const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
-                if (buffer.numberOfChannels === 1) return buffer.getChannelData(0).slice();
-                const mono = new Float32Array(buffer.length);
-                for (let c = 0; c < buffer.numberOfChannels; c++) {
-                    const data = buffer.getChannelData(c);
-                    for (let i = 0; i < data.length; i++) mono[i] += data[i] / buffer.numberOfChannels;
-                }
-                return mono;
-            } finally {
-                ctx.close().catch(() => {});
+        const LIVE_ASR_GAP_MS = 1200;    // 即時預覽：兩次辨識之間至少間隔多久
+        const LIVE_ASR_MAX_S = 29;       // 超過這個長度就不再做預覽（Whisper 一次處理 30 秒）
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        /** 降到 Whisper 需要的 16 kHz：每個輸出取樣取對應區間的平均，兼作簡單的低通濾波 */
+        function resampleTo16k(pcm, sampleRate) {
+            if (sampleRate === 16000) return pcm;
+            const ratio = sampleRate / 16000;
+            const out = new Float32Array(Math.floor(pcm.length / ratio));
+            for (let i = 0; i < out.length; i++) {
+                const start = Math.floor(i * ratio);
+                const end = Math.min(pcm.length, Math.max(start + 1, Math.floor((i + 1) * ratio)));
+                let sum = 0;
+                for (let j = start; j < end; j++) sum += pcm[j];
+                out[i] = sum / (end - start);
             }
+            return out;
+        }
+
+        /**
+         * 直接擷取麥克風的原始波形（不經 MediaRecorder 壓縮），
+         * 這樣錄音途中隨時能取出「到目前為止」的語音來做即時辨識。
+         */
+        function createPcmCapture(stream) {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            ctx.resume?.().catch(() => {});
+            const source = ctx.createMediaStreamSource(stream);
+            const node = ctx.createScriptProcessor(4096, 1, 1);
+            const mute = ctx.createGain();
+            mute.gain.value = 0;   // 要接到輸出才會持續觸發，但不能把麥克風聲音放出來
+            const chunks = [];
+            let length = 0;
+            node.onaudioprocess = (e) => {
+                chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+                length += e.inputBuffer.length;
+            };
+            source.connect(node);
+            node.connect(mute);
+            mute.connect(ctx.destination);
+            return {
+                seconds: () => length / ctx.sampleRate,
+                /** 到目前為止的全部語音，16 kHz 單聲道 */
+                snapshot() {
+                    const all = new Float32Array(length);
+                    let offset = 0;
+                    for (const c of chunks) { if (offset + c.length > length) break; all.set(c, offset); offset += c.length; }
+                    return resampleTo16k(all, ctx.sampleRate);
+                },
+                stop() {
+                    node.onaudioprocess = null;
+                    source.disconnect();
+                    node.disconnect();
+                    ctx.close().catch(() => {});
+                },
+            };
         }
 
         /**
@@ -1498,25 +1558,61 @@
             const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label} · 離線` });
             bubble.setPlaceholder('正在錄音…');
 
-            const recorder = new MediaRecorder(stream);
-            const chunks = [];
-            recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-            const autoStop = setTimeout(() => session.stop(), MODEL_REC_MAX_MS);
-            session.stop = () => { if (recorder.state !== 'inactive') recorder.stop(); };
+            const capture = createPcmCapture(stream);
+            const model = pickAsrModel();
+            const liveModel = modelKeysReady.has('asr-live') ? 'asr-live' : null;
+            const transcribeAudio = (audio, modelKey) => mtCall(
+                { type: 'transcribe', audio, lang: from, model: modelKey, offline: !navigator.onLine }, null, [audio.buffer]);
 
-            recorder.onstop = async () => {
+            let stopped = false;
+            let hasPreview = false;
+            let hasLiveText = false;
+
+            // 即時預覽：模型是整段辨識的，所以用小模型反覆辨識「到目前為止」的語音。
+            // 上一輪做完才開始下一輪，裝置越慢預覽就越稀疏，但不會越積越多。
+            (async () => {
+                let coveredSecs = 0;
+                while (!stopped && state.live && liveModel) {
+                    await sleep(LIVE_ASR_GAP_MS);
+                    if (stopped) break;
+                    const secs = capture.seconds();
+                    if (secs > LIVE_ASR_MAX_S) break;
+                    if (secs < 2) continue;                 // 太短的片段模型會亂猜
+                    if (secs - coveredSecs < 1) continue;   // 沒有新的語音
+                    const audio = prepareSpeech(capture.snapshot());
+                    if (!audio) continue;
+                    try {
+                        const text = await transcribeAudio(audio, liveModel);
+                        coveredSecs = secs;
+                        if (stopped || !text) continue;
+                        hasLiveText = true;
+                        bubble.setSource('', text);
+                        const preview = await translateOnDevice(text, to, from);
+                        if (!stopped) { hasPreview = true; bubble.setPending(preview); }
+                    } catch (e) {
+                        console.warn('離線即時預覽失敗：', e);   // 預覽失敗不提示，最終結果才處理錯誤
+                    }
+                }
+            })();
+
+            const finish = async () => {
+                if (stopped) return;
+                stopped = true;
                 clearTimeout(autoStop);
+                const pcm = capture.snapshot();
+                capture.stop();
                 stopStream();
                 release();
                 try {
-                    const audio = prepareSpeech(await decodeTo16k(new Blob(chunks, { type: recorder.mimeType })));
+                    // 最終結果一律用較準的主要模型整段重新辨識
+                    const audio = prepareSpeech(pcm);
                     if (!audio) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     setStatus('辨識語音中', 'busy');
-                    bubble.setPlaceholder('辨識語音中…');
-                    const text = await mtCall({ type: 'transcribe', audio, lang: from, model: pickAsrModel(), offline: !navigator.onLine }, null, [audio.buffer]);
+                    if (!hasLiveText) bubble.setPlaceholder('辨識語音中…');
+                    const text = await transcribeAudio(audio, model);
                     if (!text) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     bubble.setSource(text);
-                    bubble.setPending('');
+                    if (!hasPreview) bubble.setPending('');
                     setStatus('離線翻譯中', 'busy');
                     const result = await translateOnDevice(text, to, from);
                     const btnSpeak = bubble.finalize(result, to);
@@ -1529,13 +1625,14 @@
                     setStatus(msg, 'error');
                 }
             };
+            const autoStop = setTimeout(finish, MODEL_REC_MAX_MS);
+            session.stop = finish;
 
             playBeep();
             startMeter(role, stream);
             btn.classList.add('is-recording');
             el.voiceHint.textContent = '錄音中… 再點一下結束';
             setStatus(`錄音中（${LANGS[from].label}）`, 'listening');
-            recorder.start();
         }
 
         function stopRecordingIfAny() {
@@ -1733,6 +1830,7 @@
             state.other = b.dataset.lang;
             store.set('tm_other', state.other);
             renderControls();
+            warmOfflineModels();
         }));
         document.querySelectorAll('#segTarget .seg__btn').forEach((b) => b.addEventListener('click', () => {
             state.target = b.dataset.lang;
@@ -1766,11 +1864,12 @@
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.modal.hidden) closeSettings(); });
 
         window.addEventListener('online', () => { setIdleStatus(); toast('已恢復連線'); });
-        window.addEventListener('offline', () => { stopRecordingIfAny(); setIdleStatus(); toast(deviceSupported ? '目前離線：改用裝置端翻譯' : '目前離線：可瀏覽對話與朗讀，翻譯需連線'); });
+        window.addEventListener('offline', () => { stopRecordingIfAny(); setIdleStatus(); warmOfflineModels(); toast(deviceSupported ? '目前離線：改用裝置端翻譯' : '目前離線：可瀏覽對話與朗讀，翻譯需連線'); });
         for (const id of Object.keys(MODEL_PACKS)) {
             const b = $(`btnModel-${id}`);
             b.addEventListener('click', () => downloadModelPack(id, b));
         }
+        warmOfflineModels();    // 離線開啟 App 時先載入模型
         refreshLocalSpeech();   // 先查好離線語音狀態，離線時按麥克風才能立即判斷
         $('btnOfflineDownload').addEventListener('click', downloadOfflinePacks);
         document.addEventListener('visibilitychange', () => { if (document.hidden) stopRecordingIfAny(); });

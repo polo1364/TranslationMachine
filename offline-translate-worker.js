@@ -15,7 +15,9 @@ const MODELS = {
 const MT_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'fp16' };
 // 例外：英→日模型的 fp16 解碼器檔無法載入（ONNX 判定為無效模型），改用未壓縮的 fp32，只多約 6 MB
 const MT_DTYPE_OVERRIDE = { 'en>ja': { encoder_model: 'q8', decoder_model_merged: 'fp32' } };
-const MAX_LOADED = 2;   // 同時留在記憶體的翻譯模型數，避免手機記憶體不足
+// 同時留在記憶體的翻譯模型數。中日對話來回各需兩個模型（經英文轉譯），共四個；
+// 記憶體充裕的裝置全部留著，免得每換一個人說話就重新載入。手機只留兩個，避免記憶體不足。
+const MAX_LOADED = (self.navigator?.deviceMemory ?? 4) >= 8 ? 4 : 2;
 
 // 語音辨識：Whisper 多語言版，兩種大小。
 // 實測同一段日語：base 有四處錯字，small 幾乎全對；中文 base 會把「我想買」聽成「我向買」，small 正確。
@@ -23,6 +25,9 @@ const MAX_LOADED = 2;   // 同時留在記憶體的翻譯模型數，避免手�
 const ASR_MODELS = {
     'asr': { id: 'Xenova/whisper-base', dtype: { encoder_model: 'fp32', decoder_model_merged: 'q8' } },
     'asr-small': { id: 'Xenova/whisper-small', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' } },
+    // 即時預覽專用：Whisper 每次都要處理固定 30 秒的視窗，small 一次約 8 秒、base 約 4 秒（桌面實測），
+    // 來不及在說話途中出結果；tiny 約 1.5 秒，準確度較粗但只用來預覽，最終結果仍由上面的模型產生。
+    'asr-live': { id: 'Xenova/whisper-tiny', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' } },
 };
 const ASR_LANG = { zh: 'chinese', ja: 'japanese', en: 'english' };
 
@@ -88,20 +93,25 @@ function progressTracker(onProgress) {
     };
 }
 
-// 語音模型獨立保留，不佔翻譯模型的名額；同時間只留一個在記憶體
-let asrKey = null;
-let asrPipe = null;
+// 語音模型獨立保留，不佔翻譯模型的名額。
+// 記憶體裡最多同時有：預覽用的 tiny，加上一個主要模型（base 或 small）。
+const asrPipes = new Map();
 function getAsr(key, onProgress) {
-    if (asrKey !== key) {
-        asrPipe?.then((p) => p.dispose?.()).catch(() => {});
-        asrKey = key;
-        asrPipe = pipeline('automatic-speech-recognition', ASR_MODELS[key].id, {
+    if (!asrPipes.has(key)) {
+        if (key !== 'asr-live') {
+            for (const [other, pipe] of asrPipes) {
+                if (other === 'asr-live') continue;
+                asrPipes.delete(other);
+                pipe.then((p) => p.dispose?.()).catch(() => {});
+            }
+        }
+        asrPipes.set(key, pipeline('automatic-speech-recognition', ASR_MODELS[key].id, {
             dtype: ASR_MODELS[key].dtype,
             device: 'wasm',
             progress_callback: progressTracker(onProgress),
-        }).catch((err) => { if (asrKey === key) { asrKey = null; asrPipe = null; } throw err; });
+        }).catch((err) => { asrPipes.delete(key); throw err; }));
     }
-    return asrPipe;
+    return asrPipes.get(key);
 }
 
 /** audio：16 kHz 單聲道 Float32Array */
@@ -201,6 +211,11 @@ async function handle(data) {
                 report(1);
             }
             await dropStaleFiles();
+            self.postMessage({ id, type: 'done' });
+        } else if (type === 'warm') {
+            // 預先把模型載入記憶體，第一句話就不用等。個別失敗不影響其他模型。
+            for (const key of data.asr ?? []) await getAsr(key).catch(() => {});
+            for (const key of (data.mt ?? []).slice(0, MAX_LOADED)) await getPipe(key).catch(() => {});
             self.postMessage({ id, type: 'done' });
         } else if (type === 'transcribe') {
             self.postMessage({ id, type: 'done', result: await transcribe(data.audio, data.lang, data.model) });
