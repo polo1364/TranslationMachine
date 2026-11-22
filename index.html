@@ -553,8 +553,16 @@
         ].join('\n');
         const IMAGE_PROMPT = (lang) =>
             `Read all text visible in this image and translate it into ${lang}. ` +
-            'Keep the reading order (top to bottom, then left to right), keep line breaks, and separate distinct blocks with a blank line. ' +
-            'Output only the translated text. If the image contains no readable text, reply with a single short sentence in the target language saying so.';
+            'Follow the natural reading order of the original (vertical Japanese text runs top to bottom, columns right to left), keep line breaks, and separate distinct blocks with a blank line. ' +
+            'Output only the translated text, with these additions that help a traveller act on it:\n' +
+            '- The reader is a traveller deciding what to order or do, so a name they cannot picture is of no use to them. ' +
+            'When a dish, ingredient or local term is transliterated, kept in its original characters, or otherwise would not be understood by an ordinary reader of the target language, ' +
+            'add a very short explanation in parentheses right after it — what it is made of or how it is prepared, a few words only. ' +
+            'Do not explain things the reader already knows (ramen, sushi, tempura and the like), and do not add opinions or recommendations.\n' +
+            '- Copy every number exactly: prices, quantities, times, dates. If a price is crossed out and replaced, give both, marking which one is crossed out.\n' +
+            '- Keep small-print notes such as limited quantity, minimum order, origin, or extra charges; they affect what the reader can order.\n' +
+            '- If some text is too unclear to read with confidence, translate your best reading and mark it with (?) rather than silently guessing or omitting it.\n' +
+            'If the image contains no readable text, reply with a single short sentence in the target language saying so.';
         const API_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
         const IMAGE_MAX_SIDE = 1568;
         const IMAGE_RAW_LIMIT = 1.5 * 1024 * 1024;
