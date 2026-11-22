@@ -322,6 +322,7 @@
             background: var(--card); border: 1px solid var(--line); color: var(--text);
             font: inherit; font-size: 16px;
         }
+        .field__hint { display: block; margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
         .field__input--area { resize: vertical; min-height: 76px; font-size: 14px; line-height: 1.5; }
         .check { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; font-size: 13.5px; line-height: 1.5; color: var(--text-2); cursor: pointer; }
         .check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--me); flex: none; }
@@ -463,6 +464,14 @@
                     <option value="claude-haiku-5-5">Claude Haiku 5.5 · 最快最省</option>
                 </select>
             </label>
+            <label class="field">
+                <span class="field__label">語音辨識方式</span>
+                <select class="field__input" id="asrEngineSelect">
+                    <option value="browser">瀏覽器內建 · 可連續聆聽</option>
+                    <option value="model">App 內建模型 · 不受瀏覽器中斷影響</option>
+                </select>
+                <small class="field__hint">瀏覽器內建的會在說話途中自己停掉時，改用「App 內建模型」：要先在下方下載語音辨識模型，說完才辨識、單次最長 60 秒。</small>
+            </label>
             <label class="check">
                 <input type="checkbox" id="liveToggle">
                 <span>說話時即時預覽翻譯<small>關閉後只在說完時翻譯一次，較省用量；離線時關閉也較省電</small></span>
@@ -547,6 +556,7 @@
             model: pick(store.get('tm_model'), MODELS, MODELS[0]),
             live: store.get('tm_live', '1') === '1',
             fastPreview: store.get('tm_fast_preview', '0') === '1',   // 預設關閉：正確優先
+            asrEngine: pick(store.get('tm_asr_engine'), ['browser', 'model'], 'browser'),
             apiKey: store.get('tm_anthropic_key', ''),
         };
 
@@ -1332,15 +1342,31 @@
         // ============================================================
         const IS_ANDROID = /Android/i.test(navigator.userAgent);
         // iPadOS 的 Safari 會自稱 Mac，用觸控點數補判
-        const IS_MOBILE = IS_ANDROID || /iPhone|iPad|iPod/i.test(navigator.userAgent)
+        const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
             || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+        const IS_MOBILE = IS_ANDROID || IS_IOS;
+        // 已加到主畫面、以獨立 App 形式開啟（iOS 在這種模式下常無法使用 Safari 的語音辨識）
+        const IS_STANDALONE = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
         /** 把兩段聽到的文字接起來：英文中間補空白，中日文直接相連 */
         const joinSpeech = (a, b, lang) => (!a ? b : !b ? a : lang === 'en' ? `${a.trimEnd()} ${b.trimStart()}` : a + b);
         let activeRec = null;      // 目前的聆聽（有 stop() 的物件）
         let activeBtn = null;
         let beepCtx = null;
 
+        // iOS 要在使用者的觸碰動作裡先「唸」一次（空字串），之後才能自動朗讀譯文。
+        // 只做一次，而且盡量在第一次觸碰畫面時就做，不要每次按麥克風都做：
+        // 在 iOS 上，語音合成會搶走音訊通道，緊接著啟動的語音辨識可能因此中斷。
+        let speechUnlocked = false;
+        function unlockSpeech() {
+            if (speechUnlocked) return;
+            speechUnlocked = true;
+            try { synth?.speak(new SpeechSynthesisUtterance('')); } catch { /* 忽略 */ }
+        }
+        document.addEventListener('pointerdown', unlockSpeech, { once: true, capture: true });
+
         function playBeep() {
+            // iOS 上播放聲音會切換音訊通道，可能讓剛啟動的語音辨識中斷，所以不播提示音
+            if (IS_IOS) return;
             try {
                 beepCtx ??= new (window.AudioContext || window.webkitAudioContext)();
                 if (beepCtx.state === 'suspended') beepCtx.resume();
@@ -1355,23 +1381,18 @@
         }
 
         function onMicClick(role, btn) {
-            // 在使用者手勢內先解鎖語音合成（iOS 需要）
-            stopSpeaking();
-            try { synth?.speak(new SpeechSynthesisUtterance('')); } catch { /* 忽略 */ }
+            stopSpeaking();   // 朗讀中的聲音會被麥克風收進去，在 iOS 上還會讓辨識中斷
+            unlockSpeech();
 
             if (activeRec) { activeRec.stop(); return; }   // 錄音中再點任一顆＝結束
-            if (!SpeechRecognition) {
-                setStatus('不支援語音辨識', 'error');
-                toast('此瀏覽器不支援語音辨識，請改用 Chrome、Edge 或 Safari，或使用文字模式');
-                return;
-            }
+            const canUseModel = !!pickAsrModel() && !!navigator.mediaDevices?.getUserMedia;
             if (!navigator.onLine) {
                 // 離線：改用裝置端語音辨識＋裝置端翻譯
                 const from = role === 'me' ? 'zh' : state.other;
                 const local = localSpeech[from];
-                if (local?.state === 'available') {
+                if (SpeechRecognition && local?.state === 'available') {
                     startRecording(role, btn, local.tag);
-                } else if (pickAsrModel() && navigator.mediaDevices?.getUserMedia) {
+                } else if (canUseModel) {
                     startModelRecording(role, btn);   // 瀏覽器沒有裝置端語音辨識（手機）：錄音後交給 Whisper 模型
                 } else {
                     setStatus('離線中', 'offline');
@@ -1380,10 +1401,23 @@
                 return;
             }
             if (!state.apiKey) { openSettings(); return; }
+            // 連線時也可以改用 App 內建的語音模型來辨識（再交給 Claude 翻譯）：
+            // 使用者在設定裡指定，或這個瀏覽器根本沒有語音辨識時自動採用
+            if (canUseModel && (state.asrEngine === 'model' || !SpeechRecognition)) {
+                startModelRecording(role, btn);
+                return;
+            }
+            if (!SpeechRecognition) {
+                setStatus('不支援語音辨識', 'error');
+                toast('此瀏覽器不支援語音辨識。可到設定下載語音辨識模型，或改用文字模式');
+                return;
+            }
+            if (state.asrEngine === 'model') toast('尚未下載語音辨識模型，暫時改用瀏覽器的語音辨識');
             startRecording(role, btn);
         }
 
         const SEGMENT_PAUSE_MS = 900;     // 辨識器確定一段話後，停頓這麼久就先把這段送去翻
+        const SEGMENT_STABLE_MS = 1600;   // （iOS）文字停住這麼久沒再變，也當作講完一段
         const MAX_SILENCE_MS = 45000;     // 這麼久完全沒聽到話，才自動結束聆聽
         // 無法靠重開解決的錯誤；其餘（no-speech、aborted、network…）都會接著重開
         const FATAL_REC_ERRORS = ['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'];
@@ -1406,9 +1440,10 @@
             let recActive = false;        // 目前的辨識器是否還在跑（start 之後、onend 之前）
             let recError = '';
             let sessionFinal = '';        // 目前這個辨識器已確定的文字
+            let sessionAll = '';          // 目前這個辨識器聽到的全部文字（已確定＋還在變動）
             let sessionHeard = false;     // 目前這個辨識器有沒有聽到東西
             let sessionStartedAt = 0;
-            let committedLen = 0;         // sessionFinal 之中已經送去翻譯的長度
+            let committedLen = 0;         // sessionAll 之中已經送去翻譯的長度
             let quickFailures = 0;        // 連續幾次「一開就結束而且沒聽到東西」
             let restartTimer = 0;
             // 整次聆聽
@@ -1530,26 +1565,34 @@
                 seg = null;
                 s.closed = true;
                 clearTimeout(s.liveTimer);
-                committedLen = sessionFinal.length;
+                committedLen = sessionAll.length;
                 translateSegment(s);
             }
 
             function handleResult(finalText, interimText) {
+                const all = finalText + interimText;
+                if (all === sessionAll) return;   // 內容沒變（有些瀏覽器會重複送同一筆）
                 sessionFinal = finalText;
-                const freshFinal = finalText.slice(committedLen);   // 還沒送去翻的已確定文字
-                const fresh = freshFinal + interimText;
+                sessionAll = all;
+                // 扣掉已經送去翻的開頭，剩下的才是這一段
+                const freshFinal = finalText.slice(committedLen);
+                const freshInterim = interimText.slice(Math.max(0, committedLen - finalText.length));
+                const fresh = freshFinal + freshInterim;
                 if (!fresh.trim()) return;
                 sessionHeard = true;
                 lastHeardAt = Date.now();
                 const s = seg ?? openSegment();
                 s.text = fresh;
-                s.bubble.setSource(freshFinal, interimText);
+                s.bubble.setSource(freshFinal, freshInterim);
                 clearTimeout(s.liveTimer);
                 clearTimeout(commitTimer);
-                if (interimText.trim()) {
+                if (freshInterim.trim()) {
                     // 還在說：稍等一下再出預覽，避免每個字都發請求
                     const snapshot = fresh.trim();
                     if (state.live && snapshot.length >= 2) s.liveTimer = setTimeout(() => runLive(s, snapshot), LIVE_DEBOUNCE_MS);
+                    // iOS 的辨識結果常常要到整個結束才標成「已確定」，等不到就永遠不會分段。
+                    // 所以在 iOS 上，文字停住一陣子沒再變，就當作講完一段，先送去翻
+                    if (IS_IOS) commitTimer = setTimeout(commitSegment, SEGMENT_STABLE_MS);
                 } else {
                     // 辨識器已確定這段話：再停頓一下沒有新的話，就把這一段送去翻
                     commitTimer = setTimeout(commitSegment, SEGMENT_PAUSE_MS);
@@ -1616,6 +1659,7 @@
                 };
 
                 sessionFinal = '';
+                sessionAll = '';
                 sessionHeard = false;
                 committedLen = 0;
                 recError = '';
@@ -1674,6 +1718,10 @@
                 if (localTag && (recError === 'service-not-allowed' || recError === 'language-not-supported')) {
                     setStatus('離線語音無法使用', 'error');
                     toast('離線語音包無法使用，請連線後到設定重新下載');
+                } else if (recError === 'service-not-allowed' && IS_IOS && IS_STANDALONE) {
+                    // iOS 把網頁加到主畫面後，常常不允許使用 Safari 的語音辨識
+                    setStatus('此模式無法語音辨識', 'error');
+                    toast('從主畫面開啟時 iOS 不提供語音辨識。請改用 Safari 開啟，或到設定把語音辨識方式改成「App 內建模型」');
                 } else if (recError === 'not-allowed' || recError === 'service-not-allowed') {
                     setStatus('麥克風未授權', 'error');
                     toast('請允許此網站使用麥克風');
@@ -1683,7 +1731,7 @@
                     setStatus('語音辨識連線失敗', 'error');
                 } else if (quickFailures >= 4) {
                     setStatus('語音辨識無法啟動', 'error');
-                    toast('語音辨識一直無法啟動，請再按一次，或改用文字模式');
+                    toast('語音辨識一直無法啟動。可到設定把語音辨識方式改成「App 內建模型」，或改用文字模式');
                 } else if (recError === 'no-speech' || !userStopped) {
                     setStatus('沒有聽到聲音');
                 } else {
@@ -1868,7 +1916,16 @@
             const stopStream = () => stream.getTracks().forEach((t) => t.stop());
             if (cancelled) { stopStream(); release(); setIdleStatus(); return; }
 
-            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label} · 離線` });
+            // 連線時：語音由 App 內建模型辨識，翻譯仍交給 Claude（較準）。離線時兩者都在裝置上做。
+            const online = navigator.onLine && !!state.apiKey;
+            const translatePreview = (text) => (online
+                ? streamClaude(textContent(text, to), null, previewOptions()).promise
+                : translateOnDevice(text, to, from));
+            const translateFinal = (text, onText) => (online
+                ? streamClaude(textContent(text, to), onText).promise
+                : translateOnDevice(text, to, from));
+
+            const bubble = createBubble({ side: role, tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${online ? '' : ' · 離線'}` });
             bubble.setPlaceholder('正在錄音…');
 
             const capture = createPcmCapture(stream);
@@ -1913,7 +1970,7 @@
                         const ready = cutAtBoundary(stable);
                         if (!ready || ready === translated) continue;
                         translated = ready;
-                        const preview = await translateOnDevice(ready, to, from);
+                        const preview = await translatePreview(ready);
                         if (!stopped) { hasPreview = true; bubble.setPending(preview); }
                     } catch (e) {
                         console.warn('離線即時預覽失敗：', e);   // 預覽失敗不提示，最終結果才處理錯誤
@@ -1945,14 +2002,17 @@
                     if (!text) { bubble.remove(); setStatus('沒有聽到聲音'); return; }
                     bubble.setSource(text);
                     if (!hasPreview) bubble.setPending('');
-                    setStatus('離線翻譯中', 'busy');
-                    const result = await translateOnDevice(text, to, from);
+                    setStatus(online ? '翻譯中' : '離線翻譯中', 'busy');
+                    const result = await translateFinal(text, (partial) => bubble.setPending(partial));
                     const btnSpeak = bubble.finalize(result, to);
                     setIdleStatus();
                     speak(result, to, btnSpeak);
                 } catch (err) {
-                    const msg = err instanceof UserFacingError ? err.message : '離線語音辨識失敗';
-                    if (!(err instanceof UserFacingError)) console.error(err);
+                    // 連線時錯誤多半來自 Claude（Key、額度、網路），交給共用的說明；其餘是辨識本身失敗
+                    const fromApi = online && !(err instanceof UserFacingError) && err?.status !== undefined;
+                    const msg = err instanceof UserFacingError ? err.message
+                        : fromApi ? await explainError(err) : '語音辨識失敗';
+                    if (!(err instanceof UserFacingError) && !fromApi) console.error(err);
                     bubble.fail(msg);
                     setStatus(msg, 'error');
                 }
@@ -2131,6 +2191,7 @@
             el.modelSelect.value = state.model;
             el.liveToggle.checked = state.live;
             $('fastPreviewToggle').checked = state.fastPreview;
+            $('asrEngineSelect').value = state.asrEngine;
             $('glossaryInput').value = store.get('tm_glossary', '');
             el.modal.hidden = false;
             refreshOfflineStatus();
@@ -2154,6 +2215,8 @@
             store.set('tm_live', state.live ? '1' : '0');
             state.fastPreview = $('fastPreviewToggle').checked;
             store.set('tm_fast_preview', state.fastPreview ? '1' : '0');
+            state.asrEngine = pick($('asrEngineSelect').value, ['browser', 'model'], 'browser');
+            store.set('tm_asr_engine', state.asrEngine);
             closeSettings();
             setIdleStatus();
             toast('設定已儲存');
