@@ -235,6 +235,10 @@
         .lay--note { font-size: 13px; line-height: 1.45; font-weight: 400; color: var(--muted); padding-bottom: 4px; }
         .lay--text { font-size: 14.5px; line-height: 1.55; font-weight: 500; color: var(--text-2); }
         .lay--gap { height: 8px; }
+        .lay--mark {
+            font-size: 16.5px; text-align: center; margin: 6px 0; padding: 6px 10px; border-radius: 10px;
+            background: color-mix(in srgb, var(--accent) 12%, transparent);
+        }
         .msg__actions { display: flex; gap: 4px; margin: 6px -6px -4px; }
         .msg__btn {
             display: inline-flex; align-items: center; gap: 5px;
@@ -613,7 +617,9 @@
             '- Reproduce the layout of the original, so the translation reads like the sign or menu itself. ' +
             'Keep the original order of the blocks. The app draws the layout from these line markers, so use them and nothing else:\n' +
             '  "# " then text — the main title, such as the shop or document name (the most prominent text in the image).\n' +
-            '  "## " then text — a section heading.\n' +
+            '  "## " then text — a section heading. Always put it on the line above the items it labels, even when the image prints the label beside or below them.\n' +
+            '  "- " then name — an item in a list that shows no price or value of its own (a dish, drink or product name). The name is the translated name followed by the original name.\n' +
+            '  "! " then text — a line the original makes stand out: an offer, a price that applies to everything, a warning.\n' +
             '  name, then " | ", then value — a line that pairs an item with its price or another value shown beside it. ' +
             'The app puts the name on the left and the value on the right. Use exactly one " | " in the line; ' +
             'the name is the translated name followed by the original name, and anything printed next to the price (per plate, 5 pieces) stays with the value.\n' +
@@ -1381,9 +1387,12 @@
         function renderLayout(node, text) {
             node.textContent = '';
             for (const raw of text.split('\n')) {
-                const line = raw.trim();
+                let line = raw.trim();
                 let m;
                 let block;
+                // 「- 」開頭是清單裡的品項；有沒有價格都用同一種列樣式
+                const isItem = /^[-•]\s+\S/.test(line);
+                if (isItem) line = line.replace(/^[-•]\s+/, '');
                 if (!line) {
                     block = make('span', 'lay lay--gap');
                 } else if ((m = /^#\s+(.+)/.exec(line))) {
@@ -1403,6 +1412,14 @@
                     appendWithNumbers(left, name);
                     appendWithNumbers(right, rest.join(' '));
                     block.append(left, right);
+                } else if (isItem) {
+                    block = make('span', 'lay lay--row');
+                    const left = make('span', 'lay__name');
+                    appendWithNumbers(left, line);
+                    block.append(left);
+                } else if ((m = /^[!！]\s*(.+)/.exec(line))) {
+                    block = make('span', 'lay lay--mark');
+                    appendWithNumbers(block, m[1]);
                 } else {
                     block = make('span', 'lay lay--text');
                     appendWithNumbers(block, line);
@@ -1412,7 +1429,7 @@
         }
         /** 去掉版面標記，給朗讀與複製用 */
         const stripLayout = (text) => text.split('\n')
-            .map((line) => line.trim().replace(/^(#+|>)\s*/, '').replace(LAYOUT_SPLIT, '　'))
+            .map((line) => line.trim().replace(/^(#+\s+|>\s*|[-•]\s+|[!！]\s*)/, '').replace(LAYOUT_SPLIT, '　'))
             .join('\n');
 
         // ---------- 對話歷史（存在這台裝置上，按垃圾桶才清空） ----------
