@@ -29,7 +29,10 @@ const ASR_MODELS = {
     // 來不及在說話途中出結果；tiny 約 1.5 秒，準確度較粗但只用來預覽，最終結果仍由上面的模型產生。
     'asr-live': { id: 'Xenova/whisper-tiny', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' } },
 };
-const ASR_LANG = { zh: 'chinese', ja: 'japanese', en: 'english' };
+const ASR_LANG = {
+    zh: 'chinese', ja: 'japanese', en: 'english', ko: 'korean', es: 'spanish',
+    fr: 'french', de: 'german', th: 'thai', vi: 'vietnamese', id: 'indonesian',
+};
 
 // 中文模型以簡體訓練：輸入先轉簡體，輸出再轉回臺灣繁體與用語
 const toSimplified = OpenCC.Converter({ from: 'tw', to: 'cn' });

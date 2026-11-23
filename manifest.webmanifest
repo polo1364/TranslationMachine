@@ -1,7 +1,7 @@
 {
   "name": "譯機 · AI 雙語口譯",
   "short_name": "譯機",
-  "description": "中文與日文、英文之間的即時語音、文字、圖片口譯機",
+  "description": "中文與日、英、韓、西、法、德、泰、越、印尼文之間的即時語音、文字、圖片口譯機",
   "lang": "zh-Hant-TW",
   "start_url": "./",
   "scope": "./",

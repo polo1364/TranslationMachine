@@ -1,6 +1,6 @@
 // 譯機 service worker
 // 改版時請調整 VERSION，舊快取會在 activate 時清掉。
-const VERSION = 'v4';
+const VERSION = 'v5';
 const FLAGS_CACHE = 'tm-flags';   // 頁面寫給 service worker 看的設定旗標，改版時不清除
 const SHELL_CACHE = `tm-shell-${VERSION}`;
 const CDN_CACHE = `tm-cdn-${VERSION}`;

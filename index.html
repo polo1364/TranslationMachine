@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>譯機 · AI 雙語口譯</title>
-    <meta name="description" content="中文與日文、英文之間的即時語音、文字、圖片口譯機">
+    <meta name="description" content="中文與日、英、韓、西、法、德、泰、越、印尼文之間的即時語音、文字、圖片口譯機">
     <meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#f3efe7" media="(prefers-color-scheme: light)">
     <meta name="mobile-web-app-capable" content="yes">
@@ -39,6 +39,13 @@
             --me: #3fb8a5;
             --other-ja: #f0694b;
             --other-en: #8b9dff;
+            --other-ko: #4cc9c0;
+            --other-es: #f0a93c;
+            --other-fr: #5fa8f5;
+            --other-de: #7fd08a;
+            --other-th: #c58af9;
+            --other-vi: #f27ba5;
+            --other-id: #d6c94e;
             --warn: #e8b64c;
             --err: #ff6b5e;
             --num: #f4c95d;
@@ -63,6 +70,13 @@
                 --me: #0f8a78;
                 --other-ja: #cf4327;
                 --other-en: #4a5bd0;
+                --other-ko: #0f8a83;
+                --other-es: #b86a00;
+                --other-fr: #1f6fcc;
+                --other-de: #2e8540;
+                --other-th: #8a3fd1;
+                --other-vi: #c8336b;
+                --other-id: #857500;
                 --warn: #a8760a;
                 --err: #c93425;
                 --num: #9a4a00;
@@ -72,6 +86,13 @@
             }
         }
         body[data-other="en"] { --other: var(--other-en); }
+        body[data-other="ko"] { --other: var(--other-ko); }
+        body[data-other="es"] { --other: var(--other-es); }
+        body[data-other="fr"] { --other: var(--other-fr); }
+        body[data-other="de"] { --other: var(--other-de); }
+        body[data-other="th"] { --other: var(--other-th); }
+        body[data-other="vi"] { --other: var(--other-vi); }
+        body[data-other="id"] { --other: var(--other-id); }
 
         * { box-sizing: border-box; }
         html, body { height: 100%; }
@@ -235,9 +256,15 @@
         .tab[aria-selected="true"] { background: var(--card-2); color: var(--text); box-shadow: 0 1px 0 var(--line) inset; }
 
         .lang-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-        .lang-row__label { font-size: 13px; color: var(--muted); }
-        .seg { display: flex; gap: 4px; padding: 3px; background: var(--card); border-radius: 999px; }
+        .lang-row__label { flex: none; font-size: 13px; color: var(--muted); }
+        /* 語言多，放不下時可以左右滑動 */
+        .seg {
+            display: flex; gap: 4px; padding: 3px; background: var(--card); border-radius: 999px;
+            min-width: 0; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+        }
+        .seg::-webkit-scrollbar { display: none; }
         .seg__btn {
+            flex: none; white-space: nowrap;
             padding: 7px 16px; border-radius: 999px;
             font-size: 13.5px; font-weight: 600; color: var(--muted);
             transition: background 0.2s, color 0.2s;
@@ -414,15 +441,9 @@
 
             <div class="lang-row">
                 <span class="lang-row__label" id="langLabel">對方語言</span>
-                <div class="seg" id="segOther" role="group" aria-label="對方語言">
-                    <button class="seg__btn" type="button" data-lang="ja" aria-pressed="true">日文</button>
-                    <button class="seg__btn" type="button" data-lang="en" aria-pressed="false">英文</button>
-                </div>
-                <div class="seg" id="segTarget" role="group" aria-label="翻譯成">
-                    <button class="seg__btn" type="button" data-lang="zh" aria-pressed="true">中文</button>
-                    <button class="seg__btn" type="button" data-lang="ja" aria-pressed="false">日文</button>
-                    <button class="seg__btn" type="button" data-lang="en" aria-pressed="false">英文</button>
-                </div>
+                <!-- 按鈕由程式依 LANGS 產生 -->
+                <div class="seg" id="segOther" role="group" aria-label="對方語言"></div>
+                <div class="seg" id="segTarget" role="group" aria-label="翻譯成"></div>
             </div>
 
             <section class="panel panel--voice" aria-label="語音翻譯">
@@ -530,7 +551,20 @@
             zh: { prompt: 'Traditional Chinese as used in Taiwan (繁體中文)', speech: 'zh-TW', rec: 'cmn-Hant-TW', label: '中文', glyph: '中', html: 'zh-Hant-TW' },
             ja: { prompt: 'Japanese', speech: 'ja-JP', rec: 'ja-JP', label: '日文', glyph: '日', html: 'ja' },
             en: { prompt: 'English', speech: 'en-US', rec: 'en-US', label: '英文', glyph: 'EN', html: 'en' },
+            ko: { prompt: 'Korean', speech: 'ko-KR', rec: 'ko-KR', label: '韓文', glyph: '韓', html: 'ko' },
+            es: { prompt: 'Spanish', speech: 'es-ES', rec: 'es-ES', label: '西文', glyph: '西', html: 'es' },
+            fr: { prompt: 'French', speech: 'fr-FR', rec: 'fr-FR', label: '法文', glyph: '法', html: 'fr' },
+            de: { prompt: 'German', speech: 'de-DE', rec: 'de-DE', label: '德文', glyph: '德', html: 'de' },
+            th: { prompt: 'Thai', speech: 'th-TH', rec: 'th-TH', label: '泰文', glyph: '泰', html: 'th' },
+            vi: { prompt: 'Vietnamese', speech: 'vi-VN', rec: 'vi-VN', label: '越文', glyph: '越', html: 'vi' },
+            id: { prompt: 'Indonesian', speech: 'id-ID', rec: 'id-ID', label: '印尼文', glyph: '印', html: 'id' },
         };
+        const LANG_KEYS = Object.keys(LANGS);
+        const OTHER_LANGS = LANG_KEYS.filter((k) => k !== 'zh');
+        // 離線翻譯（裝置端模型、離線語音與圖片辨識）只有這三種語言；其餘語言需要連線
+        const OFFLINE_LANGS = ['zh', 'ja', 'en'];
+        /** 中日文字與字之間不留空白，其餘語言以空白分隔 */
+        const usesSpaces = (lang) => lang !== 'zh' && lang !== 'ja';
         const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
         // 這些模型的安全分類器可能拒答；啟用伺服器端 fallback，由 API 自動改用其他模型重跑
         const FALLBACK_MODELS = new Set(['claude-opus-5-5', 'claude-sonnet-5-5']);
@@ -596,8 +630,8 @@
 
         const state = {
             mode: 'voice',
-            other: pick(store.get('tm_other'), ['ja', 'en'], 'ja'),
-            target: pick(store.get('tm_target'), ['zh', 'ja', 'en'], 'zh'),
+            other: pick(store.get('tm_other'), OTHER_LANGS, 'ja'),
+            target: pick(store.get('tm_target'), LANG_KEYS, 'zh'),
             model: pick(store.get('tm_model'), MODELS, MODELS[0]),
             live: store.get('tm_live', '1') === '1',
             fastPreview: store.get('tm_fast_preview', '0') === '1',   // 預設關閉：正確優先
@@ -757,7 +791,10 @@
         // 把「三本」翻成「三個」而不是「三瓶」。所以記下最近幾句雙方的原文，翻譯時一併附上。
         // 只留在記憶體裡，清除對話時一起清掉。
         const SPEAKER_LABEL = { me: 'Traveller', other: 'Local person' };
-        const LANG_LABEL = { zh: 'Chinese', ja: 'Japanese', en: 'English' };
+        const LANG_LABEL = {
+            zh: 'Chinese', ja: 'Japanese', en: 'English', ko: 'Korean', es: 'Spanish',
+            fr: 'French', de: 'German', th: 'Thai', vi: 'Vietnamese', id: 'Indonesian',
+        };
         // 出國時多半是零散的短對話：問完店員，過一陣子又去問司機，兩段毫不相干。
         // 所以前文只在「同一段對話」內有效：隔太久沒講話就視為新對話，之前的全部不用。
         const CONTEXT_GAP_MS = 90 * 1000;   // 兩句之間隔超過這麼久，就當作換了一段對話
@@ -942,7 +979,14 @@
             return deviceTranslators.get(key);
         }
 
+        /** 離線功能只支援中日英；用到其他語言時直接說明，不要讓使用者以為是沒下載 */
+        function assertOfflineLangs(...langs) {
+            const missing = langs.find((k) => !OFFLINE_LANGS.includes(k));
+            if (missing) throw new UserFacingError(`${LANGS[missing].label}需要連線才能翻譯`);
+        }
+
         async function translateOnDevice(text, to, from = detectLang(text)) {
+            assertOfflineLangs(from, to);
             if (from === to) return text;
 
             // 1. 瀏覽器內建翻譯（桌面版 Chrome／Edge）優先，品質較好也不佔額外空間
@@ -1572,7 +1616,7 @@
         // 已加到主畫面、以獨立 App 形式開啟（iOS 在這種模式下常無法使用 Safari 的語音辨識）
         const IS_STANDALONE = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
         /** 把兩段聽到的文字接起來：英文中間補空白，中日文直接相連 */
-        const joinSpeech = (a, b, lang) => (!a ? b : !b ? a : lang === 'en' ? `${a.trimEnd()} ${b.trimStart()}` : a + b);
+        const joinSpeech = (a, b, lang) => (!a ? b : !b ? a : usesSpaces(lang) ? `${a.trimEnd()} ${b.trimStart()}` : a + b);
         let activeRec = null;      // 目前的聆聽（有 stop() 的物件）
         let activeBtn = null;
         let beepCtx = null;
@@ -1630,6 +1674,11 @@
             if (!navigator.onLine) {
                 // 離線：改用裝置端語音辨識＋裝置端翻譯
                 const from = role === 'me' ? 'zh' : state.other;
+                if (!OFFLINE_LANGS.includes(state.other)) {
+                    setStatus('離線中', 'offline');
+                    toast(`${LANGS[state.other].label}需要連線才能翻譯`);
+                    return;
+                }
                 const local = localSpeech[from];
                 if (SpeechRecognition && local?.state === 'available') {
                     startRecording(role, btn, local.tag);
@@ -1679,8 +1728,12 @@
             if (lang === 'zh') {
                 return t.length < 3 || /(的|和|跟|與|或|在|把|被|對|向|從|因為|所以|如果|雖然|但是|可是|而且|然後|就是|還有|，|、)$/.test(t);
             }
-            return t.split(/\s+/).length < 2
-                || /(\b(the|a|an|to|of|in|on|at|for|with|and|or|but|so|because|if|that|my|your|is|are|was|were)|,)$/i.test(t);
+            if (lang === 'en') {
+                return t.split(/\s+/).length < 2
+                    || /(\b(the|a|an|to|of|in|on|at|for|with|and|or|but|so|because|if|that|my|your|is|are|was|were)|,)$/i.test(t);
+            }
+            if (lang === 'th') return t.length < 4;   // 泰文詞與詞之間沒有空白，不能用字數判斷
+            return t.split(/\s+/).length < 2 || /,$/.test(t);
         }
 
         /**
@@ -1688,7 +1741,7 @@
          * 只處理緊接在中日文字後面的標點，數字與英文裡的（38.5、U.S.）不動。
          */
         function tidyPunctuation(text, lang) {
-            if (lang === 'en') return text;
+            if (usesSpaces(lang)) return text;
             const CJK_CHAR = '[\\u3000-\\u30ff\\u3400-\\u9fff\\uff00-\\uffef]';
             let out = text.replace(/\.{3,}|。{3,}|…+/g, '……');
             const map = lang === 'zh'
@@ -1704,7 +1757,8 @@
         function endSentence(text, lang) {
             const t = text.trim();
             if (!t || /[。！？!?.…」』）)，、,]$/.test(t)) return t;
-            return t + (lang === 'en' ? '.' : '。');
+            if (lang === 'th') return t;   // 泰文不用句號，段落之間靠空白分隔
+            return t + (usesSpaces(lang) ? '.' : '。');
         }
 
         /**
@@ -1723,7 +1777,7 @@
                 tag: `${who} · ${LANGS[from].label} → ${LANGS[to].label}${localTag ? ' · 離線' : ''}`,
             });
             const SRC_GAP = ' ';                          // 原文各段之間留個空白，比較好讀
-            const DST_GAP = to === 'en' ? ' ' : '';       // 中日文譯文靠標點分隔，不需要空白
+            const DST_GAP = usesSpaces(to) ? ' ' : '';       // 中日文譯文靠標點分隔，不需要空白
 
             // 辨識器（會重開很多次）
             let rec = null;
@@ -2017,7 +2071,7 @@
                     if (!reason && seg && looksUnfinished(seg.text, from)) {
                         // 句子還沒講完就換辨識器：把這半句帶到下一個辨識器，等後半句接上來再一起翻
                         clearTimeout(commitTimer);
-                        seg.carry = seg.text.trim() + (from === 'en' ? ' ' : '');   // 英文接下去要隔一個空白
+                        seg.carry = seg.text.trim() + (usesSpaces(from) ? ' ' : '');   // 以空白分隔的語言接下去要隔一個空白
                         seg.finalText = '';
                         seg.interimText = '';
                         commitTimer = setTimeout(commitSegment, SEGMENT_UNFINISHED_MS);
@@ -2518,6 +2572,7 @@
             if (offline) {
                 // 離線：先在裝置上辨識文字，再用裝置端翻譯
                 try {
+                    assertOfflineLangs(to);
                     const text = await ocrImage(objectUrl, to, (p) => setStatus(`辨識文字 ${Math.round(p * 100)}%`, 'busy'));
                     if (!text) throw new UserFacingError('圖片中沒有辨識到文字');
                     bubble.setSource(text);
@@ -2560,8 +2615,14 @@
             document.body.dataset.mode = state.mode;
             document.body.dataset.other = state.other;
             document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.mode === state.mode)));
-            document.querySelectorAll('#segOther .seg__btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === state.other)));
-            document.querySelectorAll('#segTarget .seg__btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === state.target)));
+            for (const [id, current] of [['segOther', state.other], ['segTarget', state.target]]) {
+                document.querySelectorAll(`#${id} .seg__btn`).forEach((b) => {
+                    const on = b.dataset.lang === current;
+                    b.setAttribute('aria-pressed', String(on));
+                    // 選中的語言可能被捲到看不見的地方，帶回畫面內
+                    if (on) b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                });
+            }
             el.langLabel.textContent = state.mode === 'voice' ? '對方語言' : '翻譯成';
             const glyph = LANGS[state.other].glyph;
             el.micOtherGlyph.textContent = glyph;
@@ -2624,6 +2685,16 @@
         el.micOther.addEventListener('click', () => onMicClick('other', el.micOther));
 
         document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => switchMode(t.dataset.mode)));
+        const fillSeg = (id, keys) => $(id).append(...keys.map((k) => {
+            const b = document.createElement('button');
+            b.className = 'seg__btn';
+            b.type = 'button';
+            b.dataset.lang = k;
+            b.textContent = LANGS[k].label;
+            return b;
+        }));
+        fillSeg('segOther', OTHER_LANGS);
+        fillSeg('segTarget', LANG_KEYS);
         document.querySelectorAll('#segOther .seg__btn').forEach((b) => b.addEventListener('click', () => {
             if (state.other !== b.dataset.lang) conversation.length = 0;   // 換了對方的語言＝換了對象，之前的對話不再當前文
             state.other = b.dataset.lang;
