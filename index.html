@@ -594,10 +594,21 @@
             'Follow the natural reading order of the original (vertical Japanese text runs top to bottom, columns right to left), keep line breaks, and separate distinct blocks with a blank line. ' +
             'Output only the translated text, with these additions that help a traveller act on it:\n' +
             '- The reader is a traveller deciding what to order or do, so a name they cannot picture is of no use to them. ' +
-            'When a dish, ingredient or local term is transliterated, kept in its original characters, or otherwise would not be understood by an ordinary reader of the target language, ' +
-            'add a very short explanation in parentheses right after it — what it is made of or how it is prepared, a few words only. ' +
+            'Give every dish and product a name in the target language that says what it is; never leave a name only in the original language. ' +
+            'When the original is written in a different language or script from the target, put the original name right after the translated one, exactly as printed, ' +
+            'so the reader can point at it or say it when ordering. ' +
+            'When a dish, ingredient or local term would still not be understood by an ordinary reader of the target language, ' +
+            'add a very short explanation — what it is made of or how it is prepared, a few words only. ' +
             'Do not explain things the reader already knows (ramen, sushi, tempura and the like), and do not add opinions or recommendations.\n' +
-            '- Copy every number exactly: prices, quantities, times, dates. If a price is crossed out and replaced, give both, marking which one is crossed out.\n' +
+            '- Menus and price lists must be easy to scan on a phone: one item per block, with a blank line between items. ' +
+            'First line: translated name, original name, then the price at the end of that line. Put the explanation, if any, on its own line directly underneath. ' +
+            'Use the same layout for every item. Plain text only — no Markdown, tables, or bullet symbols.\n' +
+            '- Keep the digits of every number exactly as printed: prices, quantities, times, dates. If a price is crossed out and replaced, give both, marking which one is crossed out. ' +
+            'Write prices the way a reader of the target language reads them, so the amount cannot be mistaken: ' +
+            'when the original uses a dot or a space to group thousands (15.000 on a Vietnamese menu means fifteen thousand, not fifteen), use a comma instead (15,000), ' +
+            'and name the currency in the target language when the image makes it clear which one it is (the country, language, address or a currency sign). ' +
+            'Never convert a price into another currency.\n' +
+            '- These rules apply whatever the source and target languages are.\n' +
             '- Keep small-print notes such as limited quantity, minimum order, origin, or extra charges; they affect what the reader can order.\n' +
             '- Handwriting and photos are often hard to read. Read carefully and commit to what you can make out; most of the text should carry no marker at all. ' +
             'Use (?) sparingly, only on a specific word whose meaning you genuinely cannot settle, placed right after that word — a page full of (?) is as unhelpful as one full of wrong guesses.\n' +
