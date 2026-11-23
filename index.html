@@ -178,6 +178,8 @@
         }
         .empty__glyphs .g-other { color: var(--other); transition: color 0.4s; }
         .empty__glyphs .g-me { color: var(--me); }
+        /* 文字／圖片模式：左邊是「文」「圖」，不代表對方語言，不套對方語言的顏色 */
+        body:not([data-mode="voice"]) .empty__glyphs .g-other { color: var(--text); }
         .empty__glyphs .g-arrow { font-family: var(--font-sans); font-size: 22px; font-weight: 400; color: var(--muted); }
         .empty__hint { margin-top: 18px; font-size: 14px; line-height: 1.7; }
 
@@ -425,8 +427,8 @@
             <div class="empty" id="empty">
                 <div class="empty__glyphs" aria-hidden="true">
                     <span class="g-other" id="emptyOther">日</span>
-                    <span class="g-arrow">⇄</span>
-                    <span class="g-me">中</span>
+                    <span class="g-arrow" id="emptyArrow">⇄</span>
+                    <span class="g-me" id="emptyMe">中</span>
                 </div>
                 <p class="empty__hint" id="emptyHint"></p>
             </div>
@@ -2627,7 +2629,11 @@
             const glyph = LANGS[state.other].glyph;
             el.micOtherGlyph.textContent = glyph;
             el.micOtherGlyph.toggleAttribute('data-latin', state.other === 'en');
-            el.emptyOther.textContent = glyph;
+            // 主面板：語音模式顯示「對方 ⇄ 中」；文字／圖片模式顯示「文／圖 → 翻譯成的語言」
+            const voice = state.mode === 'voice';
+            el.emptyOther.textContent = voice ? glyph : state.mode === 'text' ? '文' : '圖';
+            $('emptyArrow').textContent = voice ? '⇄' : '→';
+            $('emptyMe').textContent = voice ? LANGS.zh.glyph : LANGS[state.target].glyph;
             el.emptyHint.innerHTML = EMPTY_HINTS[state.mode];
         }
 
